@@ -164,6 +164,12 @@ final class ActionPlayer {
         case .scroll(let x, let y, let deltaX, let deltaY):
             await performScroll(at: CGPoint(x: x, y: y), deltaX: deltaX, deltaY: deltaY)
 
+        case .keyPress(let keyCode, _, let modifiers):
+            await performKeyPress(keyCode: keyCode, modifiers: modifiers)
+
+        case .typeText(let text):
+            await performTypeText(text)
+
         case .delay(let seconds):
             let adjustedDelay = seconds / speedMultiplier
             try? await Task.sleep(nanoseconds: UInt64(adjustedDelay * 1_000_000_000))
@@ -295,6 +301,49 @@ final class ActionPlayer {
                                      wheel2: Int32(deltaX * 10),
                                      wheel3: 0) {
             scrollEvent.post(tap: .cghidEventTap)
+        }
+    }
+
+    // MARK: - Keyboard Event Generation
+
+    private func performKeyPress(keyCode: Int64, modifiers: ModifierFlags) async {
+        let cgFlags = modifiers.toCGEventFlags()
+
+        // Key down
+        if let keyDownEvent = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(keyCode), keyDown: true) {
+            keyDownEvent.flags = cgFlags
+            keyDownEvent.post(tap: .cghidEventTap)
+        }
+
+        try? await Task.sleep(nanoseconds: 30_000_000) // 30ms
+
+        // Key up
+        if let keyUpEvent = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(keyCode), keyDown: false) {
+            keyUpEvent.flags = cgFlags
+            keyUpEvent.post(tap: .cghidEventTap)
+        }
+
+        try? await Task.sleep(nanoseconds: 30_000_000) // 30ms
+    }
+
+    private func performTypeText(_ text: String) async {
+        for character in text {
+            // Use CGEvent to type each character via Unicode input
+            let string = String(character)
+            let utf16 = Array(string.utf16)
+
+            if let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true) {
+                event.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
+                event.post(tap: .cghidEventTap)
+            }
+
+            try? await Task.sleep(nanoseconds: 20_000_000) // 20ms
+
+            if let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) {
+                event.post(tap: .cghidEventTap)
+            }
+
+            try? await Task.sleep(nanoseconds: 20_000_000) // 20ms between characters
         }
     }
 }

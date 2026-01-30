@@ -9,7 +9,7 @@ import Foundation
 import CoreGraphics
 import AppKit
 
-/// Monitors global mouse events using CGEvent tap
+/// Monitors global mouse and keyboard events using CGEvent tap
 @preconcurrency
 final class EventMonitor: @unchecked Sendable {
     /// Callback when an action is captured
@@ -17,6 +17,9 @@ final class EventMonitor: @unchecked Sendable {
 
     /// Callback when monitoring fails
     var onError: ((Error) -> Void)?
+
+    /// Enable keyboard monitoring (disabled by default for privacy)
+    var captureKeyboard: Bool = true
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -31,6 +34,11 @@ final class EventMonitor: @unchecked Sendable {
     private var lastClickPoint: CGPoint?
     private let doubleClickInterval: TimeInterval = 0.3
     private let doubleClickRadius: CGFloat = 5.0
+
+    // Keyboard text accumulator for batching
+    private var textBuffer: String = ""
+    private var textBufferTimer: Timer?
+    private let textBufferDelay: TimeInterval = 0.5
 
     init() {}
 
@@ -47,14 +55,21 @@ final class EventMonitor: @unchecked Sendable {
             throw EventMonitorError.accessibilityNotGranted
         }
 
-        // Define events to monitor
-        let eventMask: CGEventMask =
+        // Define events to monitor (mouse + keyboard)
+        var eventMask: CGEventMask =
             (1 << CGEventType.leftMouseDown.rawValue) |
             (1 << CGEventType.leftMouseUp.rawValue) |
             (1 << CGEventType.leftMouseDragged.rawValue) |
             (1 << CGEventType.rightMouseDown.rawValue) |
             (1 << CGEventType.rightMouseUp.rawValue) |
             (1 << CGEventType.scrollWheel.rawValue)
+
+        // Add keyboard events if enabled
+        if captureKeyboard {
+            eventMask |= (1 << CGEventType.keyDown.rawValue)
+            eventMask |= (1 << CGEventType.keyUp.rawValue)
+            eventMask |= (1 << CGEventType.flagsChanged.rawValue)
+        }
 
         // Create event tap
         let callback: CGEventTapCallBack = { proxy, type, event, refcon in
@@ -110,6 +125,11 @@ final class EventMonitor: @unchecked Sendable {
         runLoopSource = nil
         isRunning = false
         dragStartPoint = nil
+
+        // Flush any remaining text buffer
+        flushTextBuffer()
+        textBufferTimer?.invalidate()
+        textBufferTimer = nil
     }
 
     // MARK: - Event Handling
@@ -183,9 +203,75 @@ final class EventMonitor: @unchecked Sendable {
             // Dragging in progress - don't emit action yet
             break
 
+        case .keyDown:
+            handleKeyDown(event: event)
+
+        case .keyUp:
+            // Key up is handled as part of keyDown for simplicity
+            break
+
+        case .flagsChanged:
+            // Modifier key change - we handle modifiers with regular keys
+            break
+
         default:
             break
         }
+    }
+
+    // MARK: - Keyboard Event Handling
+
+    private func handleKeyDown(event: CGEvent) {
+        let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+        let flags = event.flags
+        let modifiers = ModifierFlags.from(cgFlags: flags)
+
+        // Get the character representation
+        var character: String?
+
+        // Try to get the Unicode string
+        var unicodeLength: Int = 0
+        var unicodeString = [UniChar](repeating: 0, count: 4)
+        event.keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &unicodeLength, unicodeString: &unicodeString)
+
+        if unicodeLength > 0 {
+            character = String(utf16CodeUnits: unicodeString, count: unicodeLength)
+        }
+
+        // Check if it's a printable character without command modifiers (shift is OK)
+        let hasCommandModifiers = modifiers.contains(.command) || modifiers.contains(.control) || modifiers.contains(.option)
+
+        // Special key codes that should be recorded as key presses, not text
+        let specialKeyCodes: Set<Int64> = [36, 48, 51, 53, 76, 123, 124, 125, 126] // Return, Tab, Delete, Escape, Enter, Arrows
+
+        if !hasCommandModifiers && !specialKeyCodes.contains(keyCode) {
+            // Regular typing - accumulate text
+            if let char = character, !char.isEmpty, char.first?.isASCII == true || char.first?.isLetter == true || char.first?.isNumber == true || char.first?.isPunctuation == true || char.first?.isWhitespace == true {
+                textBuffer.append(char)
+                resetTextBufferTimer()
+            } else if let char = character, !char.isEmpty {
+                // Non-ASCII character (emoji, CJK, etc.)
+                textBuffer.append(char)
+                resetTextBufferTimer()
+            }
+        } else {
+            // Special key or command modifier - emit as key press
+            flushTextBuffer()
+            onActionCaptured?(Action.keyPress(keyCode: keyCode, character: character, modifiers: modifiers))
+        }
+    }
+
+    private func resetTextBufferTimer() {
+        textBufferTimer?.invalidate()
+        textBufferTimer = Timer.scheduledTimer(withTimeInterval: textBufferDelay, repeats: false) { [weak self] _ in
+            self?.flushTextBuffer()
+        }
+    }
+
+    private func flushTextBuffer() {
+        guard !textBuffer.isEmpty else { return }
+        onActionCaptured?(Action.typeText(text: textBuffer))
+        textBuffer = ""
     }
 
     private func checkForDoubleClick(at point: CGPoint) -> Bool {

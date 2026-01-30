@@ -147,6 +147,15 @@ extension Action {
             return "Drag"
         case .scroll:
             return "Scroll"
+        case .keyPress(_, let character, let modifiers):
+            let char = character ?? "Key"
+            if !modifiers.isEmpty {
+                return "\(modifiers.description)\(char)"
+            }
+            return "Key '\(char)'"
+        case .typeText(let text):
+            let preview = text.count > 10 ? String(text.prefix(10)) + "..." : text
+            return "Type \"\(preview)\""
         case .delay(let seconds):
             return "Wait \(String(format: "%.1f", seconds))s"
         }
