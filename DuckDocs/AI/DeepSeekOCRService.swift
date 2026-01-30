@@ -7,15 +7,17 @@
 
 import Foundation
 import AppKit
+import MLXLMCommon
+import MLXLLM
 
-/// Service for analyzing screenshots using DeepSeek OCR 2 (MLX 4-bit)
+/// Service for analyzing screenshots using Vision Language Model (MLX Swift)
 @Observable
 @MainActor
 final class DeepSeekOCRService {
     /// Service state
     enum State {
         case idle
-        case checking
+        case loading
         case processing
         case error(String)
     }
@@ -26,16 +28,20 @@ final class DeepSeekOCRService {
     /// Processing progress (0.0 to 1.0)
     private(set) var progress: Double = 0.0
 
-    /// Whether Python and dependencies are available
-    private(set) var isAvailable: Bool = false
+    /// Whether the model is loaded and ready
+    private(set) var isReady: Bool = false
 
-    /// Path to Python executable
-    private var pythonPath: String = "/usr/bin/python3"
+    /// Model loading progress
+    private(set) var loadingProgress: Double = 0.0
 
-    /// Path to the OCR script
-    private var scriptPath: String {
-        Bundle.main.path(forResource: "deepseek_ocr", ofType: "py") ?? ""
-    }
+    /// VLM model ID (4-bit quantized for efficiency)
+    private let modelId = "mlx-community/Qwen2.5-VL-3B-Instruct-4bit"
+
+    /// Loaded model context
+    private var modelContext: ModelContext?
+
+    /// Chat session for maintaining context
+    private var chatSession: ChatSession?
 
     /// Custom prompt for analysis
     var customPrompt: String?
@@ -43,94 +49,100 @@ final class DeepSeekOCRService {
     /// Maximum tokens for generation
     var maxTokens: Int = 2048
 
-    init() {
-        Task {
-            await checkAvailability()
-        }
-    }
+    /// Image resize dimensions for processing
+    private let imageSize = CGSize(width: 512, height: 512)
 
-    /// Check if Python and dependencies are available
-    func checkAvailability() async {
-        state = .checking
+    init() {}
 
-        // Try common Python paths
-        let pythonPaths = [
-            "/usr/bin/python3",
-            "/usr/local/bin/python3",
-            "/opt/homebrew/bin/python3",
-            "python3"
-        ]
+    /// Load the VLM model
+    func loadModel() async throws {
+        guard modelContext == nil else { return }
 
-        for path in pythonPaths {
-            if await checkPythonPath(path) {
-                pythonPath = path
-                isAvailable = true
-                state = .idle
-                return
-            }
-        }
-
-        isAvailable = false
-        state = .error("Python 3 with mlx-lm not found")
-    }
-
-    private func checkPythonPath(_ path: String) async -> Bool {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = ["-c", "import mlx_lm; print('ok')"]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
+        state = .loading
+        loadingProgress = 0.0
 
         do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus == 0
+            // Load the vision language model
+            let context = try await MLXLMCommon.loadModel(
+                id: modelId,
+                progressHandler: { [weak self] progress in
+                    Task { @MainActor in
+                        self?.loadingProgress = progress.fractionCompleted
+                    }
+                }
+            )
+
+            modelContext = context
+
+            // Create chat session with image processing config
+            let processing = UserInput.Processing(resize: imageSize)
+            chatSession = ChatSession(
+                context,
+                generateParameters: GenerateParameters(maxTokens: maxTokens),
+                processing: processing
+            )
+
+            isReady = true
+            state = .idle
+            loadingProgress = 1.0
         } catch {
-            return false
+            state = .error("Failed to load model: \(error.localizedDescription)")
+            throw VisionError.modelLoadFailed(error.localizedDescription)
         }
     }
 
     /// Analyze a single image
     func analyzeImage(_ image: NSImage, prompt: String? = nil) async throws -> String {
-        guard isAvailable else {
-            throw OCRError.pythonNotAvailable
+        // Ensure model is loaded
+        if !isReady {
+            try await loadModel()
+        }
+
+        guard let session = chatSession else {
+            throw VisionError.modelNotReady
         }
 
         state = .processing
         progress = 0.0
 
         // Save image to temp file
-        let tempDir = FileManager.default.temporaryDirectory
-        let imagePath = tempDir.appendingPathComponent(UUID().uuidString + ".png")
-
-        guard let tiffData = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiffData),
-              let pngData = bitmap.representation(using: .png, properties: [:]) else {
-            state = .error("Failed to convert image")
-            throw OCRError.imageConversionFailed
-        }
-
-        try pngData.write(to: imagePath)
+        let tempURL = try saveImageToTemp(image)
 
         defer {
-            try? FileManager.default.removeItem(at: imagePath)
+            try? FileManager.default.removeItem(at: tempURL)
         }
 
-        // Run Python script
-        let result = try await runPythonScript(imagePath: imagePath.path, prompt: prompt)
+        let analysisPrompt = prompt ?? customPrompt ?? """
+        Analyze this screenshot and describe:
+        1. What UI elements are visible
+        2. Any text content shown
+        3. The current state of the interface
 
-        state = .idle
-        progress = 1.0
+        Be concise and focus on actionable information.
+        """
 
-        return result
+        do {
+            // Use the VLM to analyze the image
+            let result = try await session.respond(
+                to: analysisPrompt,
+                image: .url(tempURL)
+            )
+
+            state = .idle
+            progress = 1.0
+
+            return result
+        } catch {
+            state = .error("Analysis failed: \(error.localizedDescription)")
+            throw VisionError.analysisFailed(error.localizedDescription)
+        }
     }
 
     /// Analyze multiple images and generate combined documentation
-    func analyzeImages(_ captures: [CaptureResult], prompt: String? = nil) async throws -> String {
-        guard isAvailable else {
-            throw OCRError.pythonNotAvailable
+    func analyzeImages(_ captures: [CaptureResult], prompt: String? = nil) async throws -> [String] {
+        // Ensure model is loaded
+        if !isReady {
+            try await loadModel()
         }
 
         state = .processing
@@ -154,92 +166,70 @@ final class DeepSeekOCRService {
             """
 
             let result = try await analyzeImage(capture.screenshot, prompt: stepPrompt)
-            results.append("## Step \(capture.stepNumber)\n\n**Action:** \(capture.action.description)\n\n\(result)")
+            results.append(result)
         }
 
         state = .idle
         progress = 1.0
 
-        return results.joined(separator: "\n\n---\n\n")
+        return results
     }
 
-    private func runPythonScript(imagePath: String, prompt: String?) async throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: pythonPath)
+    /// Reset the chat session (clears context)
+    func resetSession() {
+        guard let context = modelContext else { return }
 
-        var arguments = [scriptPath, "--image", imagePath, "--json"]
-        if let prompt = prompt ?? customPrompt {
-            arguments.append(contentsOf: ["--prompt", prompt])
+        let processing = UserInput.Processing(resize: imageSize)
+        chatSession = ChatSession(
+            context,
+            generateParameters: GenerateParameters(maxTokens: maxTokens),
+            processing: processing
+        )
+    }
+
+    /// Unload the model to free memory
+    func unloadModel() {
+        chatSession = nil
+        modelContext = nil
+        isReady = false
+        state = .idle
+    }
+
+    // MARK: - Private Helpers
+
+    private func saveImageToTemp(_ image: NSImage) throws -> URL {
+        let tempDir = FileManager.default.temporaryDirectory
+        let imagePath = tempDir.appendingPathComponent(UUID().uuidString + ".png")
+
+        guard let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData),
+              let pngData = bitmap.representation(using: .png, properties: [:]) else {
+            throw VisionError.imageConversionFailed
         }
-        arguments.append(contentsOf: ["--max-tokens", String(maxTokens)])
 
-        process.arguments = arguments
-
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-
-        return try await withCheckedThrowingContinuation { continuation in
-            do {
-                try process.run()
-
-                Task.detached {
-                    process.waitUntilExit()
-
-                    let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-                    let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-
-                    if process.terminationStatus != 0 {
-                        let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
-                        continuation.resume(throwing: OCRError.processFailed(errorMessage))
-                        return
-                    }
-
-                    guard let output = String(data: outputData, encoding: .utf8) else {
-                        continuation.resume(throwing: OCRError.invalidOutput)
-                        return
-                    }
-
-                    // Parse JSON result
-                    if let data = output.data(using: .utf8),
-                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       let result = json["result"] as? String {
-                        continuation.resume(returning: result)
-                    } else if let data = output.data(using: .utf8),
-                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                              let error = json["error"] as? String {
-                        continuation.resume(throwing: OCRError.processFailed(error))
-                    } else {
-                        // Return raw output if not JSON
-                        continuation.resume(returning: output.trimmingCharacters(in: .whitespacesAndNewlines))
-                    }
-                }
-            } catch {
-                continuation.resume(throwing: OCRError.processFailed(error.localizedDescription))
-            }
-        }
+        try pngData.write(to: imagePath)
+        return imagePath
     }
 }
 
 // MARK: - Errors
 
-enum OCRError: LocalizedError {
-    case pythonNotAvailable
+enum VisionError: LocalizedError {
+    case modelLoadFailed(String)
+    case modelNotReady
     case imageConversionFailed
-    case processFailed(String)
-    case invalidOutput
+    case analysisFailed(String)
 
     var errorDescription: String? {
         switch self {
-        case .pythonNotAvailable:
-            return "Python 3 with mlx-lm is not available. Please install: pip install mlx-lm pillow"
+        case .modelLoadFailed(let message):
+            return "Failed to load vision model: \(message)"
+        case .modelNotReady:
+            return "Vision model is not ready. Please wait for it to load."
         case .imageConversionFailed:
             return "Failed to convert image to PNG format"
-        case .processFailed(let message):
-            return "OCR processing failed: \(message)"
-        case .invalidOutput:
-            return "Invalid output from OCR process"
+        case .analysisFailed(let message):
+            return "Image analysis failed: \(message)"
         }
     }
 }

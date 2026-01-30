@@ -70,27 +70,34 @@ let stream = SCStream(filter: filter, configuration: config, delegate: self)
 - Supports window capture, display capture, or region capture
 - Must handle stream lifecycle (start/stop properly)
 
-### DeepSeek OCR 2 Integration Pattern
+### Vision Language Model Integration (mlx-swift-lm)
 ```swift
-// Local MLX inference via Python
+// Native Swift MLX inference
+import MLXLMCommon
+import MLXLLM
+
 func analyzeImage(_ image: NSImage) async throws -> String {
-    // 1. Save NSImage to temp file
-    // 2. Call Python mlx-lm via Process or PythonKit
-    // 3. Load model: mlx-community/DeepSeek-OCR-2-4bit
-    // 4. Generate markdown from screenshot
+    // 1. Load VLM model (auto-downloads on first use)
+    let context = try await MLXLMCommon.loadModel(id: modelId)
+
+    // 2. Create chat session with image processing
+    let session = ChatSession(context, generateParameters: params, processing: processing)
+
+    // 3. Save NSImage to temp file
+    // 4. Analyze with VLM
+    let result = try await session.respond(to: prompt, image: .url(tempURL))
+
     // 5. Cleanup temp file
 }
-
-// Python script approach (recommended)
-// python deepseek_ocr.py --image /path/to/screenshot.png --prompt "..."
 ```
 
 **Model Details:**
-- Repository: `mlx-community/DeepSeek-OCR-2-4bit`
-- Size: ~4GB (4-bit quantized)
-- Requirements: Apple Silicon (M1/M2/M3), 8GB+ RAM
+- Model: `mlx-community/Qwen2.5-VL-3B-Instruct-4bit`
+- Size: ~3GB (4-bit quantized)
+- Requirements: Apple Silicon (M1/M2/M3/M4/M5), 8GB+ RAM
 - First run: Auto-download on initial load
 - Offline: 100% local, no internet required after download
+- No Python required: Pure Swift implementation via mlx-swift-lm
 
 ---
 
@@ -100,7 +107,7 @@ func analyzeImage(_ image: NSImage) async throws -> String {
 |------|-------------|-------|
 | Add new action type | `ActionSequence.swift` (enum) → `EventMonitor.swift` → `ActionPlayer.swift` | Update all three |
 | Change screenshot timing | `ScreenCapture.swift` | Modify capture trigger |
-| Modify AI processing | `DeepSeekOCRService.swift` | Python bridge, model config |
+| Modify AI processing | `DeepSeekOCRService.swift` | mlx-swift-lm, VLM config |
 | Modify output format | `MarkdownGenerator.swift` | Templates/prompts |
 | Add UI screen | `Views/*.swift` | Follow SwiftUI MVVM |
 | Handle permissions | `DuckDocsApp.swift` | Onboarding flow |
@@ -142,16 +149,16 @@ output.md + /images folder
 - Clear sensitive data from logs
 
 ### Performance
-- First model load: ~10-30s (4GB download if not cached)
-- Inference: ~1-3s per screenshot (Apple Silicon optimized)
+- First model load: ~10-30s (~3GB download if not cached)
+- Inference: ~1-3s per screenshot (Apple Silicon optimized via MLX)
 - Subsequent loads: Faster (model cached in memory)
 - Process screenshots in background queue
 - Consider batching multiple images if possible
+- M4/M5 chips benefit from Neural Accelerator optimizations
 
 ### Error Scenarios to Handle
 - Accessibility permission denied → Show setup guide
 - ScreenCapture permission denied → Prompt user
-- Python/mlx-lm not installed → Guide user to install
 - Model download fails → Retry with progress indicator
 - Insufficient memory → Warn user (8GB+ recommended)
 - Multiple displays → Handle coordinate translation
