@@ -299,13 +299,20 @@ struct ControlButtonsView: View {
 
         Task {
             do {
+                print("[DuckDocs] Starting AI processing with \(player.captureResults.count) screenshots")
+
                 // Analyze images with AI
                 var analyses: [String] = []
                 for (index, capture) in player.captureResults.enumerated() {
+                    print("[DuckDocs] Processing screenshot \(index + 1)/\(player.captureResults.count)")
                     appState.processingProgress = Double(index) / Double(player.captureResults.count)
                     let analysis = try await ocrService.analyzeImage(capture.screenshot)
                     analyses.append(analysis)
+                    print("[DuckDocs] Screenshot \(index + 1) analysis complete")
                 }
+
+                appState.processingProgress = 1.0
+                print("[DuckDocs] All screenshots analyzed, generating markdown")
 
                 // Generate markdown
                 let generator = MarkdownGenerator()
@@ -319,10 +326,12 @@ struct ControlButtonsView: View {
                     to: outputDir
                 )
 
+                print("[DuckDocs] Export complete: \(url.path)")
                 exportURL = url
                 appState.stopProcessing()
                 isExporting = false
             } catch {
+                print("[DuckDocs] Error: \(error)")
                 appState.showError(message: error.localizedDescription)
                 appState.stopProcessing()
                 isExporting = false
@@ -348,8 +357,33 @@ struct ProgressSection: View {
             }
 
             if appState.mode == .processing {
-                ProgressView(value: max(0, min(1, appState.processingProgress))) {
-                    Text("Processing with AI...")
+                // Show model loading state
+                switch ocrService.state {
+                case .loading:
+                    VStack(spacing: 8) {
+                        ProgressView(value: max(0, min(1, ocrService.loadingProgress))) {
+                            Text("Loading AI Model...")
+                        }
+                        Text("First time may take a while (~3GB download)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                case .processing:
+                    ProgressView(value: max(0, min(1, appState.processingProgress))) {
+                        Text("Analyzing screenshots...")
+                    }
+                case .error(let message):
+                    VStack(spacing: 4) {
+                        Label("Error", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                case .idle:
+                    ProgressView(value: max(0, min(1, appState.processingProgress))) {
+                        Text("Processing with AI...")
+                    }
                 }
             }
 
