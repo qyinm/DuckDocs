@@ -137,15 +137,21 @@ final class EventMonitor: @unchecked Sendable {
     private func handleEvent(type: CGEventType, event: CGEvent) {
         let location = event.location
 
-        // Calculate delay since last event
+        // Calculate delay since last event (only for mouse events, not keyboard)
         let now = Date()
-        if let lastTime = lastEventTime {
-            let delay = now.timeIntervalSince(lastTime)
-            if delay > 0.1 { // Only record significant delays
-                onActionCaptured?(.delay(seconds: delay))
+        let isMouseEvent = type == .leftMouseDown || type == .leftMouseUp ||
+                          type == .rightMouseDown || type == .rightMouseUp ||
+                          type == .scrollWheel || type == .leftMouseDragged
+
+        if isMouseEvent {
+            if let lastTime = lastEventTime {
+                let delay = now.timeIntervalSince(lastTime)
+                if delay > 0.5 { // Only record significant delays (500ms+)
+                    onActionCaptured?(.delay(seconds: delay))
+                }
             }
+            lastEventTime = now
         }
-        lastEventTime = now
 
         switch type {
         case .leftMouseDown:
@@ -235,29 +241,38 @@ final class EventMonitor: @unchecked Sendable {
         event.keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &unicodeLength, unicodeString: &unicodeString)
 
         if unicodeLength > 0 {
-            character = String(utf16CodeUnits: unicodeString, count: unicodeLength)
+            let str = String(utf16CodeUnits: unicodeString, count: unicodeLength)
+            // Filter out control characters (ASCII 0-31 except common ones)
+            let filtered = str.filter { char in
+                guard let ascii = char.asciiValue else { return true } // Keep non-ASCII
+                return ascii >= 32 || ascii == 9 || ascii == 10 || ascii == 13 // Space+, Tab, LF, CR
+            }
+            if !filtered.isEmpty {
+                character = filtered
+            }
         }
 
         // Check if it's a printable character without command modifiers (shift is OK)
         let hasCommandModifiers = modifiers.contains(.command) || modifiers.contains(.control) || modifiers.contains(.option)
 
         // Special key codes that should be recorded as key presses, not text
-        let specialKeyCodes: Set<Int64> = [36, 48, 51, 53, 76, 123, 124, 125, 126] // Return, Tab, Delete, Escape, Enter, Arrows
+        // Return(36), Tab(48), Delete(51), Escape(53), Enter(76), Arrows(123-126)
+        let specialKeyCodes: Set<Int64> = [36, 48, 51, 53, 76, 123, 124, 125, 126]
 
         if !hasCommandModifiers && !specialKeyCodes.contains(keyCode) {
             // Regular typing - accumulate text
-            if let char = character, !char.isEmpty, char.first?.isASCII == true || char.first?.isLetter == true || char.first?.isNumber == true || char.first?.isPunctuation == true || char.first?.isWhitespace == true {
-                textBuffer.append(char)
-                resetTextBufferTimer()
-            } else if let char = character, !char.isEmpty {
-                // Non-ASCII character (emoji, CJK, etc.)
+            if let char = character, !char.isEmpty {
                 textBuffer.append(char)
                 resetTextBufferTimer()
             }
+            // Don't emit anything for regular typing until buffer flushes
         } else {
             // Special key or command modifier - emit as key press
             flushTextBuffer()
-            onActionCaptured?(Action.keyPress(keyCode: keyCode, character: character, modifiers: modifiers))
+            // Only emit if it's a meaningful key press
+            if specialKeyCodes.contains(keyCode) || hasCommandModifiers {
+                onActionCaptured?(Action.keyPress(keyCode: keyCode, character: character, modifiers: modifiers))
+            }
         }
     }
 

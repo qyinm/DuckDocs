@@ -41,6 +41,15 @@ final class AppState {
     /// Current playback session (when playing)
     var currentSession: PlaybackSession?
 
+    /// Capture settings for playback
+    var captureSettings = CaptureSettings()
+
+    /// Flag for region selection mode
+    var isSelectingRegion = false
+
+    /// Flag for window selection mode
+    var isSelectingWindow = false
+
     /// Recording progress
     var recordingActionCount: Int = 0
 

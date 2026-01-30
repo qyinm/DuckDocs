@@ -7,6 +7,7 @@
 
 import Foundation
 import CoreGraphics
+import AppKit
 
 /// Replays recorded actions
 @Observable
@@ -37,6 +38,9 @@ final class ActionPlayer {
     /// Playback speed multiplier
     var speedMultiplier: Double = 1.0
 
+    /// Capture mode (full screen, region, or window)
+    var captureMode: CaptureMode = .fullScreen
+
     /// Screen capture service
     @ObservationIgnored
     private var screenCapture = ScreenCapture()
@@ -62,6 +66,9 @@ final class ActionPlayer {
 
     init() {}
 
+    /// Delay before playback starts (seconds) to allow user to switch apps
+    var startDelay: TimeInterval = 3.0
+
     /// Play an action sequence
     func play(_ sequence: ActionSequence) {
         guard state == .idle else { return }
@@ -72,7 +79,28 @@ final class ActionPlayer {
         captureResults = []
 
         playbackTask = Task {
+            // Hide the app and wait for user to switch to target app
+            await MainActor.run {
+                NSApp.hide(nil)
+            }
+
+            // Wait for the start delay
+            if startDelay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(startDelay * 1_000_000_000))
+            }
+
+            // Check if cancelled during delay
+            if Task.isCancelled || state == .idle {
+                return
+            }
+
             await playSequence(sequence)
+
+            // Show the app again after playback
+            await MainActor.run {
+                NSApp.unhide(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            }
         }
     }
 
@@ -94,6 +122,10 @@ final class ActionPlayer {
         playbackTask = nil
         state = .idle
         currentIndex = 0
+
+        // Show the app again
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     // MARK: - Private
@@ -127,7 +159,7 @@ final class ActionPlayer {
                 try? await Task.sleep(nanoseconds: 200_000_000) // 200ms
 
                 do {
-                    let screenshot = try await screenCapture.captureScreen()
+                    let screenshot = try await captureWithMode()
                     let result = CaptureResult(
                         action: action,
                         screenshot: screenshot,
@@ -173,6 +205,19 @@ final class ActionPlayer {
         case .delay(let seconds):
             let adjustedDelay = seconds / speedMultiplier
             try? await Task.sleep(nanoseconds: UInt64(adjustedDelay * 1_000_000_000))
+        }
+    }
+
+    // MARK: - Capture
+
+    private func captureWithMode() async throws -> NSImage {
+        switch captureMode {
+        case .fullScreen:
+            return try await screenCapture.captureScreen()
+        case .region(let rect):
+            return try await screenCapture.captureRegion(rect)
+        case .window(let windowID, _, _):
+            return try await screenCapture.captureWindowByID(windowID)
         }
     }
 

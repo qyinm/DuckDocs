@@ -10,33 +10,42 @@ import SwiftUI
 struct ContentView: View {
     @Environment(AppState.self) var appState
     @State private var showOnboarding = false
-    @State private var recorder = ActionRecorder()
-    @State private var player = ActionPlayer()
-    @State private var ocrService = DeepSeekOCRService()
+    @State private var captureService = AutoCaptureService()
+    @State private var job = CaptureJob()
+    @State private var showWindowPicker = false
+    private var ocrService: DeepSeekOCRService { DeepSeekOCRService.shared }
 
     var body: some View {
-        @Bindable var appState = appState
+        VStack(spacing: 24) {
+            // Header
+            Text("DuckDocs")
+                .font(.largeTitle)
+                .fontWeight(.bold)
 
-        NavigationSplitView {
-            SidebarView(recorder: recorder)
-        } detail: {
-            if appState.selectedSequence != nil {
-                DetailView(recorder: recorder, player: player, ocrService: ocrService)
-            } else {
-                ContentUnavailableView(
-                    "No Sequence Selected",
-                    systemImage: "doc.text.magnifyingglass",
-                    description: Text("Select a sequence from the sidebar or create a new recording.")
-                )
-            }
+            Text("Auto-capture and generate documentation")
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            // Settings
+            SettingsSection(job: $job, showWindowPicker: $showWindowPicker)
+
+            Divider()
+
+            // Status & Progress
+            StatusSection(captureService: captureService)
+
+            Spacer()
+
+            // Action Button
+            ActionButton(
+                captureService: captureService,
+                job: job,
+                ocrService: ocrService
+            )
         }
-        .alert("Error", isPresented: $appState.showError) {
-            Button("OK") {
-                appState.clearError()
-            }
-        } message: {
-            Text(appState.errorMessage ?? "Unknown error")
-        }
+        .padding(32)
+        .frame(minWidth: 500, minHeight: 600)
         .onAppear {
             if !appState.permissionManager.allPermissionsGranted {
                 showOnboarding = true
@@ -45,448 +54,279 @@ struct ContentView: View {
         .sheet(isPresented: $showOnboarding) {
             OnboardingView()
         }
+        .sheet(isPresented: $showWindowPicker) {
+            WindowPickerView { windowID, title, appName in
+                job.captureMode = .window(windowID: windowID, title: title, appName: appName)
+            }
+        }
     }
 }
 
-// MARK: - Sidebar View
+// MARK: - Settings Section
 
-struct SidebarView: View {
-    @Environment(AppState.self) var appState
-    let recorder: ActionRecorder
+struct SettingsSection: View {
+    @Binding var job: CaptureJob
+    @Binding var showWindowPicker: Bool
+    @State private var regionSelectorWindow: RegionSelectorWindow?
+    @State private var apiKey: String = DeepSeekOCRService.shared.apiKey
 
     var body: some View {
-        @Bindable var appState = appState
-
-        List(selection: $appState.selectedSequence) {
-            Section("Sequences") {
-                ForEach(appState.sequences) { sequence in
-                    NavigationLink(value: sequence) {
-                        SequenceRow(sequence: sequence)
+        VStack(alignment: .leading, spacing: 16) {
+            // API Key
+            HStack {
+                Text("API Key:")
+                    .frame(width: 120, alignment: .trailing)
+                SecureField("OpenRouter API Key", text: $apiKey)
+                    .textFieldStyle(.roundedBorder)
+                    .onChange(of: apiKey) { _, newValue in
+                        DeepSeekOCRService.shared.apiKey = newValue
+                        UserDefaults.standard.set(newValue, forKey: "openrouter_api_key")
                     }
-                }
-                .onDelete(perform: deleteSequences)
             }
-        }
-        .navigationSplitViewColumnWidth(min: 200, ideal: 250)
-        .toolbar {
-            ToolbarItem {
-                Button(action: createNewSequence) {
-                    Label("New Recording", systemImage: "plus")
-                }
+
+            // Output Name
+            HStack {
+                Text("Output Name:")
+                    .frame(width: 120, alignment: .trailing)
+                TextField("Documentation", text: $job.outputName)
+                    .textFieldStyle(.roundedBorder)
             }
-        }
-    }
 
-    private func createNewSequence() {
-        let sequence = ActionSequence(name: "New Recording \(appState.sequences.count + 1)")
-        appState.addSequence(sequence)
-        appState.selectedSequence = sequence
-    }
+            // Capture Target
+            HStack {
+                Text("Capture Target:")
+                    .frame(width: 120, alignment: .trailing)
 
-    private func deleteSequences(at offsets: IndexSet) {
-        for index in offsets {
-            let sequence = appState.sequences[index]
-            appState.deleteSequence(sequence)
-        }
-    }
-}
-
-// MARK: - Sequence Row
-
-struct SequenceRow: View {
-    let sequence: ActionSequence
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(sequence.name)
-                .font(.headline)
-
-            HStack(spacing: 8) {
-                Label("\(sequence.actionCount)", systemImage: "hand.tap")
-                Label(formatDuration(sequence.totalDuration), systemImage: "clock")
+                Menu {
+                    Button("Full Screen") {
+                        job.captureMode = .fullScreen
+                    }
+                    Button("Select Region...") {
+                        showRegionSelector()
+                    }
+                    Button("Select Window...") {
+                        showWindowPicker = true
+                    }
+                } label: {
+                    HStack {
+                        Image(systemName: job.captureMode.icon)
+                        Text(job.captureMode.displayName)
+                        Spacer()
+                        Image(systemName: "chevron.down")
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .cornerRadius(6)
+                }
+                .menuStyle(.borderlessButton)
+                .frame(maxWidth: .infinity)
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-        .padding(.vertical, 2)
-    }
 
-    private func formatDuration(_ duration: TimeInterval) -> String {
-        let minutes = Int(duration) / 60
-        let seconds = Int(duration) % 60
-        return String(format: "%d:%02d", minutes, seconds)
-    }
-}
+            // Next Action
+            HStack {
+                Text("Next Action:")
+                    .frame(width: 120, alignment: .trailing)
 
-// MARK: - Detail View
-
-struct DetailView: View {
-    @Environment(AppState.self) var appState
-    let recorder: ActionRecorder
-    let player: ActionPlayer
-    let ocrService: DeepSeekOCRService
-
-    @State private var isExporting = false
-    @State private var exportURL: URL?
-
-    var body: some View {
-        @Bindable var appState = appState
-
-        VStack(spacing: 20) {
-            // Status indicator
-            StatusBadge(mode: appState.mode)
-
-            if let sequence = appState.selectedSequence {
-                // Sequence info
-                SequenceInfoView(sequence: sequence)
-
-                Divider()
-
-                // Control buttons
-                ControlButtonsView(
-                    sequence: sequence,
-                    recorder: recorder,
-                    player: player,
-                    ocrService: ocrService,
-                    isExporting: $isExporting,
-                    exportURL: $exportURL
-                )
-
-                // Progress indicators
-                ProgressSection(player: player, ocrService: ocrService, recorder: recorder)
-
-                Spacer()
-
-                // Action list
-                if !sequence.actions.isEmpty {
-                    ActionListView(actions: sequence.actions)
+                Menu {
+                    Button("→ Right Arrow") {
+                        job.nextAction = .keyPress(keyCode: 124, modifiers: [])
+                    }
+                    Button("← Left Arrow") {
+                        job.nextAction = .keyPress(keyCode: 123, modifiers: [])
+                    }
+                    Button("↓ Down Arrow") {
+                        job.nextAction = .keyPress(keyCode: 125, modifiers: [])
+                    }
+                    Button("Space") {
+                        job.nextAction = .keyPress(keyCode: 49, modifiers: [])
+                    }
+                    Button("Enter") {
+                        job.nextAction = .keyPress(keyCode: 36, modifiers: [])
+                    }
+                    Button("None (Manual)") {
+                        job.nextAction = .none
+                    }
+                } label: {
+                    HStack {
+                        Text(job.nextAction.displayName)
+                        Spacer()
+                        Image(systemName: "chevron.down")
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .cornerRadius(6)
                 }
+                .menuStyle(.borderlessButton)
+                .frame(maxWidth: .infinity)
+            }
 
-                // Export result
-                if let url = exportURL {
-                    ExportResultView(url: url)
-                }
+            // Capture Count
+            HStack {
+                Text("Capture Count:")
+                    .frame(width: 120, alignment: .trailing)
+
+                Stepper("\(job.captureCount) pages", value: $job.captureCount, in: 1...100)
+            }
+
+            // Delay
+            HStack {
+                Text("Delay:")
+                    .frame(width: 120, alignment: .trailing)
+
+                Slider(value: $job.delayBetweenCaptures, in: 0.2...3.0, step: 0.1)
+                Text("\(job.delayBetweenCaptures, specifier: "%.1f")s")
+                    .frame(width: 40)
             }
         }
         .padding()
-        .frame(minWidth: 500, minHeight: 400)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+        .cornerRadius(12)
+    }
+
+    private func showRegionSelector() {
+        let window = RegionSelectorWindow()
+        window.onRegionSelected = { rect in
+            job.captureMode = .region(rect)
+            regionSelectorWindow = nil
+        }
+        window.onCancelled = {
+            regionSelectorWindow = nil
+        }
+        regionSelectorWindow = window
+        window.show()
     }
 }
 
-// MARK: - Sequence Info View
+// MARK: - Status Section
 
-struct SequenceInfoView: View {
-    let sequence: ActionSequence
-
-    var body: some View {
-        VStack(spacing: 8) {
-            Text(sequence.name)
-                .font(.title)
-
-            HStack(spacing: 20) {
-                Label("\(sequence.actionCount) actions", systemImage: "hand.tap")
-                Label(formatDuration(sequence.totalDuration), systemImage: "clock")
-            }
-            .foregroundStyle(.secondary)
-        }
-    }
-
-    private func formatDuration(_ duration: TimeInterval) -> String {
-        let minutes = Int(duration) / 60
-        let seconds = Int(duration) % 60
-        return String(format: "%d:%02d", minutes, seconds)
-    }
-}
-
-// MARK: - Control Buttons View
-
-struct ControlButtonsView: View {
-    @Environment(AppState.self) var appState
-    let sequence: ActionSequence
-    let recorder: ActionRecorder
-    let player: ActionPlayer
-    let ocrService: DeepSeekOCRService
-    @Binding var isExporting: Bool
-    @Binding var exportURL: URL?
-
-    var body: some View {
-        HStack(spacing: 16) {
-            // Record button
-            if appState.mode == .idle {
-                Button {
-                    startRecording()
-                } label: {
-                    Label("Record", systemImage: "record.circle")
-                }
-            }
-
-            // Stop recording button
-            if appState.mode == .recording {
-                Button {
-                    stopRecording()
-                } label: {
-                    Label("Stop", systemImage: "stop.circle")
-                }
-                .tint(.red)
-            }
-
-            // Play button
-            if appState.mode == .idle && !sequence.actions.isEmpty {
-                Button {
-                    startPlayback()
-                } label: {
-                    Label("Play & Capture", systemImage: "play.circle")
-                }
-            }
-
-            // Stop playback button
-            if appState.mode == .playing {
-                Button {
-                    stopPlayback()
-                } label: {
-                    Label("Stop", systemImage: "stop.circle")
-                }
-                .tint(.red)
-            }
-
-            // Generate docs button
-            if appState.mode == .idle && !player.captureResults.isEmpty {
-                Button {
-                    generateDocumentation()
-                } label: {
-                    Label("Generate Docs", systemImage: "doc.badge.gearshape")
-                }
-            }
-        }
-        .buttonStyle(.borderedProminent)
-    }
-
-    private func startRecording() {
-        appState.startRecording()
-        recorder.startRecording(name: sequence.name)
-    }
-
-    private func stopRecording() {
-        if let newSequence = recorder.stopRecording() {
-            appState.updateSequence(newSequence)
-            appState.selectedSequence = newSequence
-        }
-        appState.stopRecording()
-    }
-
-    private func startPlayback() {
-        appState.startPlayback(sequence: sequence)
-        player.play(sequence)
-
-        player.onPlaybackComplete = { captures in
-            Task { @MainActor in
-                appState.stopPlayback()
-                appState.currentSession?.captures = captures
-            }
-        }
-    }
-
-    private func stopPlayback() {
-        player.stop()
-        appState.stopPlayback()
-    }
-
-    private func generateDocumentation() {
-        guard !player.captureResults.isEmpty else { return }
-
-        isExporting = true
-        appState.startProcessing()
-
-        Task {
-            do {
-                print("[DuckDocs] Starting AI processing with \(player.captureResults.count) screenshots")
-
-                // Analyze images with AI
-                var analyses: [String] = []
-                for (index, capture) in player.captureResults.enumerated() {
-                    print("[DuckDocs] Processing screenshot \(index + 1)/\(player.captureResults.count)")
-                    appState.processingProgress = Double(index) / Double(player.captureResults.count)
-                    let analysis = try await ocrService.analyzeImage(capture.screenshot)
-                    analyses.append(analysis)
-                    print("[DuckDocs] Screenshot \(index + 1) analysis complete")
-                }
-
-                appState.processingProgress = 1.0
-                print("[DuckDocs] All screenshots analyzed, generating markdown")
-
-                // Generate markdown
-                let generator = MarkdownGenerator()
-                let documentsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-                let outputDir = documentsDir.appendingPathComponent("DuckDocs/\(sequence.name)", isDirectory: true)
-
-                let url = try generator.export(
-                    title: sequence.name,
-                    captures: player.captureResults,
-                    aiAnalysis: analyses,
-                    to: outputDir
-                )
-
-                print("[DuckDocs] Export complete: \(url.path)")
-                exportURL = url
-                appState.stopProcessing()
-                isExporting = false
-            } catch {
-                print("[DuckDocs] Error: \(error)")
-                appState.showError(message: error.localizedDescription)
-                appState.stopProcessing()
-                isExporting = false
-            }
-        }
-    }
-}
-
-// MARK: - Progress Section
-
-struct ProgressSection: View {
-    @Environment(AppState.self) var appState
-    let player: ActionPlayer
-    let ocrService: DeepSeekOCRService
-    let recorder: ActionRecorder
+struct StatusSection: View {
+    let captureService: AutoCaptureService
 
     var body: some View {
         VStack(spacing: 12) {
-            if appState.mode == .playing {
-                ProgressView(value: max(0, min(1, player.progress))) {
-                    Text("Playing... (\(max(1, player.currentIndex + 1))/\(max(1, player.totalActions)))")
-                }
-            }
+            switch captureService.state {
+            case .idle:
+                Label("Ready to capture", systemImage: "checkmark.circle")
+                    .foregroundStyle(.secondary)
 
-            if appState.mode == .processing {
-                // Show model loading state
-                switch ocrService.state {
-                case .loading:
-                    VStack(spacing: 8) {
-                        ProgressView(value: max(0, min(1, ocrService.loadingProgress))) {
-                            Text("Loading AI Model...")
-                        }
-                        Text("First time may take a while (~3GB download)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                case .processing:
-                    ProgressView(value: max(0, min(1, appState.processingProgress))) {
-                        Text("Analyzing screenshots...")
-                    }
-                case .error(let message):
-                    VStack(spacing: 4) {
-                        Label("Error", systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.red)
-                        Text(message)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                case .idle:
-                    ProgressView(value: max(0, min(1, appState.processingProgress))) {
-                        Text("Processing with AI...")
-                    }
-                }
-            }
-
-            if appState.mode == .recording {
+            case .preparing:
                 HStack {
-                    Circle()
-                        .fill(.red)
-                        .frame(width: 8, height: 8)
-
-                    Text("Recording: \(recorder.actionCount) actions")
+                    ProgressView()
+                        .scaleEffect(0.8)
+                    Text("Preparing... Switch to target app now!")
+                        .foregroundStyle(.orange)
                 }
-                .padding(.vertical, 8)
+
+            case .capturing(let current, let total):
+                VStack(spacing: 8) {
+                    ProgressView(value: Double(current), total: Double(total))
+                    Text("Capturing: \(current) / \(total)")
+                }
+
+            case .processing(let current, let total):
+                VStack(spacing: 8) {
+                    ProgressView(value: Double(current), total: Double(total))
+                    Text("AI Processing: \(current) / \(total)")
+                }
+
+            case .saving:
+                HStack {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                    Text("Saving...")
+                }
+
+            case .completed(let url):
+                VStack(spacing: 12) {
+                    Label("Completed!", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .font(.headline)
+
+                    Text(url.deletingLastPathComponent().path)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    HStack {
+                        Button("Open Folder") {
+                            NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
+                        }
+                        Button("Open File") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                }
+
+            case .error(let message):
+                VStack(spacing: 8) {
+                    Label("Error", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            // Preview thumbnails
+            if !captureService.capturedImages.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(captureService.capturedImages.enumerated()), id: \.offset) { index, image in
+                            Image(nsImage: image)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(height: 60)
+                                .cornerRadius(4)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                                )
+                        }
+                    }
+                    .padding(.horizontal)
+                }
+                .frame(height: 70)
             }
         }
         .padding()
+        .frame(maxWidth: .infinity)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.3))
+        .cornerRadius(12)
     }
 }
 
-// MARK: - Export Result View
+// MARK: - Action Button
 
-struct ExportResultView: View {
-    let url: URL
+struct ActionButton: View {
+    let captureService: AutoCaptureService
+    let job: CaptureJob
+    let ocrService: DeepSeekOCRService
 
     var body: some View {
-        GroupBox("Export Complete") {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(url.path)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                HStack {
-                    Button("Open in Finder") {
-                        NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
-                    }
-
-                    Button("Open File") {
-                        NSWorkspace.shared.open(url)
-                    }
-                }
+        switch captureService.state {
+        case .idle, .completed, .error:
+            Button {
+                captureService.run(job: job, ocrService: ocrService)
+            } label: {
+                Label("Start Capture", systemImage: "play.fill")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
             }
-        }
-    }
-}
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
 
-// MARK: - Status Badge
-
-struct StatusBadge: View {
-    let mode: AppMode
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 8, height: 8)
-
-            Text(mode.rawValue)
-                .font(.caption)
-                .fontWeight(.medium)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(statusColor.opacity(0.15))
-        .clipShape(Capsule())
-    }
-
-    private var statusColor: Color {
-        switch mode {
-        case .idle:
-            return .gray
-        case .recording:
-            return .red
-        case .playing:
-            return .blue
-        case .processing:
-            return .orange
-        }
-    }
-}
-
-// MARK: - Action List View
-
-struct ActionListView: View {
-    let actions: [Action]
-
-    var body: some View {
-        GroupBox("Recorded Actions") {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
-                    ForEach(Array(actions.enumerated()), id: \.offset) { index, action in
-                        HStack {
-                            Text("\(index + 1).")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 30, alignment: .trailing)
-
-                            Text(action.description)
-                                .font(.caption)
-                        }
-                    }
-                }
-                .padding(.vertical, 4)
+        case .preparing, .capturing, .processing, .saving:
+            Button {
+                captureService.cancel()
+            } label: {
+                Label("Cancel", systemImage: "stop.fill")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
             }
-            .frame(maxHeight: 200)
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .tint(.red)
         }
     }
 }

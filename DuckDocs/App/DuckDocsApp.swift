@@ -11,10 +11,16 @@ import SwiftUI
 struct DuckDocsApp: App {
     @State private var appState = AppState.shared
 
+    init() {
+        // API-based service, no preloading needed
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environment(appState)
         }
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
     }
 }

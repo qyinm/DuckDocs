@@ -7,6 +7,7 @@
 
 import Foundation
 import AppKit
+import CoreGraphics
 
 /// Result of capturing a screenshot after an action
 struct CaptureResult: Identifiable {
@@ -65,6 +66,7 @@ enum CaptureError: LocalizedError {
     case captureNotAllowed
     case captureFailed(String)
     case imageConversionFailed
+    case windowNotFound(CGWindowID)
 
     var errorDescription: String? {
         switch self {
@@ -76,6 +78,8 @@ enum CaptureError: LocalizedError {
             return "Capture failed: \(message)"
         case .imageConversionFailed:
             return "Failed to convert image to PNG"
+        case .windowNotFound(let windowID):
+            return "Window not found: \(windowID)"
         }
     }
 }

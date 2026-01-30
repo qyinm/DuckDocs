@@ -7,13 +7,11 @@
 
 import Foundation
 import AppKit
-import Vision
 
-/// Service for analyzing screenshots using macOS Vision framework
+/// Service for analyzing screenshots using OpenRouter API
 @Observable
 @MainActor
 final class DeepSeekOCRService {
-    /// Service state
     enum State: Equatable {
         case idle
         case loading
@@ -21,107 +19,171 @@ final class DeepSeekOCRService {
         case error(String)
     }
 
-    /// Current state
     private(set) var state: State = .idle
-
-    /// Processing progress (0.0 to 1.0)
     private(set) var progress: Double = 0.0
-
-    /// Whether the service is ready
-    private(set) var isReady: Bool = true
-
-    /// Model loading progress (not used for Vision, kept for compatibility)
+    private(set) var isReady: Bool = true  // Always ready with API
     private(set) var loadingProgress: Double = 1.0
 
-    /// Custom prompt for analysis (not used for Vision OCR)
+    // OpenRouter API configuration
+    private let apiURL = "https://openrouter.ai/api/v1/chat/completions"
+    private let modelId = "openai/gpt-4.1-nano"
+
+    /// API Key - set this before use
+    var apiKey: String = ""
+
+    /// Custom prompt for analysis
     var customPrompt: String?
 
-    init() {}
+    /// Maximum tokens for generation
+    var maxTokens: Int = 4096
 
-    /// Analyze a single image using Vision framework OCR
-    func analyzeImage(_ image: NSImage, prompt: String? = nil) async throws -> String {
-        state = .processing
-        progress = 0.0
+    /// Shared instance for app-wide use
+    static let shared = DeepSeekOCRService()
 
-        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            state = .error("Failed to convert image")
-            throw VisionError.imageConversionFailed
-        }
-
-        return try await withCheckedThrowingContinuation { continuation in
-            let request = VNRecognizeTextRequest { request, error in
-                if let error = error {
-                    continuation.resume(throwing: VisionError.analysisFailed(error.localizedDescription))
-                    return
-                }
-
-                guard let observations = request.results as? [VNRecognizedTextObservation] else {
-                    continuation.resume(returning: "No text detected in screenshot")
-                    return
-                }
-
-                // Extract text from observations
-                var texts: [String] = []
-                for observation in observations {
-                    if let topCandidate = observation.topCandidates(1).first {
-                        texts.append(topCandidate.string)
-                    }
-                }
-
-                let result = texts.isEmpty ? "No text detected in screenshot" : texts.joined(separator: "\n")
-                continuation.resume(returning: result)
-            }
-
-            // Configure for best accuracy
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = true
-            request.recognitionLanguages = ["en-US", "ko-KR", "ja-JP", "zh-Hans", "zh-Hant"]
-
-            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-
-            do {
-                try handler.perform([request])
-            } catch {
-                continuation.resume(throwing: VisionError.analysisFailed(error.localizedDescription))
-            }
+    init() {
+        // Try to load API key from environment or UserDefaults
+        if let key = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] {
+            apiKey = key
+        } else if let key = UserDefaults.standard.string(forKey: "openrouter_api_key") {
+            apiKey = key
         }
     }
 
-    /// Analyze multiple images and generate combined documentation
-    func analyzeImages(_ captures: [CaptureResult], prompt: String? = nil) async throws -> [String] {
+    /// Preload - no-op for API based service
+    func preloadModel() {
+        // No preloading needed for API
+    }
+
+    /// Load model - no-op for API based service
+    func loadModel() async throws {
+        // No loading needed for API
+    }
+
+    /// Analyze a single image and convert to markdown
+    func analyzeImage(_ image: NSImage, prompt: String? = nil) async throws -> String {
+        guard !apiKey.isEmpty else {
+            throw VisionError.apiKeyMissing
+        }
+
         state = .processing
         progress = 0.0
 
-        var results: [String] = []
+        let analysisPrompt = prompt ?? customPrompt ?? "Convert this image to markdown format. Extract all text and preserve the layout structure."
 
-        for (index, capture) in captures.enumerated() {
-            progress = Double(index) / Double(captures.count)
+        print("[OpenRouter] Converting image to base64...")
 
-            let result = try await analyzeImage(capture.screenshot, prompt: prompt)
-
-            // Format the result with action context
-            let formatted = """
-            **Action:** \(capture.action.description)
-
-            **Screen Content:**
-            \(result)
-            """
-
-            results.append(formatted)
+        // Convert image to base64
+        guard let base64Image = imageToBase64(image) else {
+            throw VisionError.imageConversionFailed
         }
+
+        print("[OpenRouter] Sending request to API...")
+
+        let result = try await sendRequest(prompt: analysisPrompt, imageBase64: base64Image)
 
         state = .idle
         progress = 1.0
 
-        return results
+        print("[OpenRouter] Analysis complete: \(result.prefix(100))...")
+        return result
     }
 
-    /// Reset (no-op for Vision framework)
-    func resetSession() {}
+    private func imageToBase64(_ image: NSImage) -> String? {
+        // Resize if too large (max 2048px on longest side)
+        let maxDimension: CGFloat = 2048
+        var targetSize = image.size
 
-    /// Unload (no-op for Vision framework)
+        if image.size.width > maxDimension || image.size.height > maxDimension {
+            let scale = maxDimension / max(image.size.width, image.size.height)
+            targetSize = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+        }
+
+        let resizedImage = NSImage(size: targetSize)
+        resizedImage.lockFocus()
+        image.draw(in: NSRect(origin: .zero, size: targetSize),
+                   from: NSRect(origin: .zero, size: image.size),
+                   operation: .copy,
+                   fraction: 1.0)
+        resizedImage.unlockFocus()
+
+        guard let tiffData = resizedImage.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData),
+              let jpegData = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
+            return nil
+        }
+
+        print("[OpenRouter] Image size: \(Int(targetSize.width))x\(Int(targetSize.height)), data: \(jpegData.count / 1024)KB")
+        return jpegData.base64EncodedString()
+    }
+
+    private func sendRequest(prompt: String, imageBase64: String) async throws -> String {
+        guard let url = URL(string: apiURL) else {
+            throw VisionError.analysisFailed("Invalid API URL")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("DuckDocs/1.0", forHTTPHeaderField: "HTTP-Referer")
+        request.setValue("DuckDocs", forHTTPHeaderField: "X-Title")
+
+        let requestBody: [String: Any] = [
+            "model": modelId,
+            "max_tokens": maxTokens,
+            "messages": [
+                [
+                    "role": "user",
+                    "content": [
+                        [
+                            "type": "text",
+                            "text": prompt
+                        ],
+                        [
+                            "type": "image_url",
+                            "image_url": [
+                                "url": "data:image/jpeg;base64,\(imageBase64)"
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw VisionError.analysisFailed("Invalid response")
+        }
+
+        if httpResponse.statusCode != 200 {
+            let responseString = String(data: data, encoding: .utf8) ?? "No response body"
+            print("[OpenRouter] Error response: \(responseString)")
+
+            if let errorJson = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let error = errorJson["error"] as? [String: Any],
+               let message = error["message"] as? String {
+                throw VisionError.analysisFailed("API Error: \(message)")
+            }
+            throw VisionError.analysisFailed("HTTP \(httpResponse.statusCode): \(responseString)")
+        }
+
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let firstChoice = choices.first,
+              let message = firstChoice["message"] as? [String: Any],
+              let content = message["content"] as? String else {
+            throw VisionError.analysisFailed("Failed to parse response")
+        }
+
+        return content
+    }
+
+    /// Unload - no-op for API based service
     func unloadModel() {
-        state = .idle
+        // No unloading needed for API
     }
 }
 
@@ -132,17 +194,20 @@ enum VisionError: LocalizedError {
     case modelNotReady
     case imageConversionFailed
     case analysisFailed(String)
+    case apiKeyMissing
 
     var errorDescription: String? {
         switch self {
         case .modelLoadFailed(let message):
-            return "Failed to load vision model: \(message)"
+            return "Failed to load model: \(message)"
         case .modelNotReady:
-            return "Vision service is not ready."
+            return "Model is not ready"
         case .imageConversionFailed:
-            return "Failed to convert image for analysis"
+            return "Failed to convert image"
         case .analysisFailed(let message):
             return "Image analysis failed: \(message)"
+        case .apiKeyMissing:
+            return "OpenRouter API key is missing. Please set it in Settings."
         }
     }
 }

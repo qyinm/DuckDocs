@@ -83,6 +83,21 @@ final class ScreenCapture {
         return NSImage(cgImage: image, size: window.frame.size)
     }
 
+    /// Capture a window by its ID
+    func captureWindowByID(_ windowID: CGWindowID) async throws -> NSImage {
+        let windows = try await getWindows()
+        guard let window = windows.first(where: { $0.windowID == windowID }) else {
+            throw CaptureError.windowNotFound(windowID)
+        }
+        return try await captureWindow(window)
+    }
+
+    /// Find a window by its ID
+    func findWindow(byID windowID: CGWindowID) async throws -> SCWindow? {
+        let windows = try await getWindows()
+        return windows.first { $0.windowID == windowID }
+    }
+
     /// Capture a region of the screen
     func captureRegion(_ rect: CGRect, on display: SCDisplay? = nil) async throws -> NSImage {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
