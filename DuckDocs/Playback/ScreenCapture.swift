@@ -1,0 +1,156 @@
+//
+//  ScreenCapture.swift
+//  DuckDocs
+//
+//  Created by DuckDocs on 2026-01-30.
+//
+
+import Foundation
+import AppKit
+import ScreenCaptureKit
+
+/// Captures screenshots using ScreenCaptureKit
+final class ScreenCapture {
+    /// Capture configuration
+    struct Configuration {
+        var captureResolution: CaptureResolution = .high
+        var showCursor: Bool = true
+
+        enum CaptureResolution {
+            case low      // 1x
+            case medium   // 1.5x
+            case high     // 2x (Retina)
+
+            var scaleFactor: CGFloat {
+                switch self {
+                case .low: return 1.0
+                case .medium: return 1.5
+                case .high: return 2.0
+                }
+            }
+        }
+    }
+
+    var configuration = Configuration()
+
+    init() {}
+
+    /// Capture the main display
+    func captureScreen() async throws -> NSImage {
+        // Get shareable content
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+
+        guard let display = content.displays.first else {
+            throw CaptureError.noDisplay
+        }
+
+        return try await captureDisplay(display)
+    }
+
+    /// Capture a specific display
+    func captureDisplay(_ display: SCDisplay) async throws -> NSImage {
+        let filter = SCContentFilter(display: display, excludingWindows: [])
+
+        let config = SCStreamConfiguration()
+        config.width = Int(CGFloat(display.width) * configuration.captureResolution.scaleFactor)
+        config.height = Int(CGFloat(display.height) * configuration.captureResolution.scaleFactor)
+        config.showsCursor = configuration.showCursor
+        config.pixelFormat = kCVPixelFormatType_32BGRA
+
+        let image = try await SCScreenshotManager.captureImage(
+            contentFilter: filter,
+            configuration: config
+        )
+
+        return NSImage(cgImage: image, size: NSSize(width: display.width, height: display.height))
+    }
+
+    /// Capture a specific window
+    func captureWindow(_ window: SCWindow) async throws -> NSImage {
+        let filter = SCContentFilter(desktopIndependentWindow: window)
+
+        let config = SCStreamConfiguration()
+        config.width = Int(CGFloat(window.frame.width) * configuration.captureResolution.scaleFactor)
+        config.height = Int(CGFloat(window.frame.height) * configuration.captureResolution.scaleFactor)
+        config.showsCursor = configuration.showCursor
+        config.pixelFormat = kCVPixelFormatType_32BGRA
+
+        let image = try await SCScreenshotManager.captureImage(
+            contentFilter: filter,
+            configuration: config
+        )
+
+        return NSImage(cgImage: image, size: window.frame.size)
+    }
+
+    /// Capture a region of the screen
+    func captureRegion(_ rect: CGRect, on display: SCDisplay? = nil) async throws -> NSImage {
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+
+        let targetDisplay = display ?? content.displays.first
+        guard let targetDisplay else {
+            throw CaptureError.noDisplay
+        }
+
+        let filter = SCContentFilter(display: targetDisplay, excludingWindows: [])
+
+        let config = SCStreamConfiguration()
+        config.sourceRect = rect
+        config.width = Int(rect.width * configuration.captureResolution.scaleFactor)
+        config.height = Int(rect.height * configuration.captureResolution.scaleFactor)
+        config.showsCursor = configuration.showCursor
+        config.pixelFormat = kCVPixelFormatType_32BGRA
+
+        let image = try await SCScreenshotManager.captureImage(
+            contentFilter: filter,
+            configuration: config
+        )
+
+        return NSImage(cgImage: image, size: rect.size)
+    }
+
+    /// Get all available displays
+    func getDisplays() async throws -> [SCDisplay] {
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        return content.displays
+    }
+
+    /// Get all available windows
+    func getWindows(includeDesktopWindows: Bool = false) async throws -> [SCWindow] {
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            !includeDesktopWindows,
+            onScreenWindowsOnly: true
+        )
+        return content.windows
+    }
+
+    /// Check if screen capture is allowed
+    func checkPermission() async -> Bool {
+        do {
+            _ = try await SCShareableContent.current
+            return true
+        } catch {
+            return false
+        }
+    }
+}
+
+// MARK: - Convenience Extensions
+
+extension SCDisplay {
+    var displayName: String {
+        "Display \(displayID)"
+    }
+}
+
+extension SCWindow {
+    var displayName: String {
+        if let title = title, !title.isEmpty {
+            return title
+        }
+        if let appName = owningApplication?.applicationName {
+            return appName
+        }
+        return "Window \(windowID)"
+    }
+}
