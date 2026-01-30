@@ -342,13 +342,13 @@ struct ProgressSection: View {
     var body: some View {
         VStack(spacing: 12) {
             if appState.mode == .playing {
-                ProgressView(value: player.progress) {
-                    Text("Playing... (\(player.currentIndex + 1)/\(player.totalActions))")
+                ProgressView(value: max(0, min(1, player.progress))) {
+                    Text("Playing... (\(max(1, player.currentIndex + 1))/\(max(1, player.totalActions)))")
                 }
             }
 
             if appState.mode == .processing {
-                ProgressView(value: appState.processingProgress) {
+                ProgressView(value: max(0, min(1, appState.processingProgress))) {
                     Text("Processing with AI...")
                 }
             }

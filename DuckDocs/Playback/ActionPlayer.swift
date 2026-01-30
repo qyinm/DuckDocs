@@ -31,7 +31,7 @@ final class ActionPlayer {
     /// Progress (0.0 to 1.0)
     var progress: Double {
         guard totalActions > 0 else { return 0 }
-        return Double(currentIndex) / Double(totalActions)
+        return min(1.0, max(0.0, Double(currentIndex) / Double(totalActions)))
     }
 
     /// Playback speed multiplier
