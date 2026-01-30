@@ -74,9 +74,9 @@ struct SettingsSection: View {
         VStack(alignment: .leading, spacing: 16) {
             // API Key
             HStack {
-                Text("API Key:")
+                Text("OpenRouter API Key:")
                     .frame(width: 120, alignment: .trailing)
-                SecureField("OpenRouter API Key", text: $apiKey)
+                SecureField("sk-or-...", text: $apiKey)
                     .textFieldStyle(.roundedBorder)
                     .onChange(of: apiKey) { _, newValue in
                         DeepSeekOCRService.shared.apiKey = newValue
