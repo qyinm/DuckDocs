@@ -9,40 +9,19 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(AppState.self) var appState
+    @State private var showOnboarding = false
+    @State private var recorder = ActionRecorder()
+    @State private var player = ActionPlayer()
+    @State private var ocrService = DeepSeekOCRService()
 
     var body: some View {
         @Bindable var appState = appState
 
         NavigationSplitView {
-            // Sidebar: Sequence List
-            List(selection: $appState.selectedSequence) {
-                Section("Sequences") {
-                    ForEach(appState.sequences) { sequence in
-                        NavigationLink(value: sequence) {
-                            VStack(alignment: .leading) {
-                                Text(sequence.name)
-                                    .font(.headline)
-                                Text("\(sequence.actionCount) actions")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    .onDelete(perform: deleteSequences)
-                }
-            }
-            .navigationSplitViewColumnWidth(min: 200, ideal: 250)
-            .toolbar {
-                ToolbarItem {
-                    Button(action: createNewSequence) {
-                        Label("New Recording", systemImage: "plus")
-                    }
-                }
-            }
+            SidebarView(recorder: recorder)
         } detail: {
-            // Main content area
             if appState.selectedSequence != nil {
-                DetailView()
+                DetailView(recorder: recorder, player: player, ocrService: ocrService)
             } else {
                 ContentUnavailableView(
                     "No Sequence Selected",
@@ -58,10 +37,48 @@ struct ContentView: View {
         } message: {
             Text(appState.errorMessage ?? "Unknown error")
         }
+        .onAppear {
+            if !appState.permissionManager.allPermissionsGranted {
+                showOnboarding = true
+            }
+        }
+        .sheet(isPresented: $showOnboarding) {
+            OnboardingView()
+        }
+    }
+}
+
+// MARK: - Sidebar View
+
+struct SidebarView: View {
+    @Environment(AppState.self) var appState
+    let recorder: ActionRecorder
+
+    var body: some View {
+        @Bindable var appState = appState
+
+        List(selection: $appState.selectedSequence) {
+            Section("Sequences") {
+                ForEach(appState.sequences) { sequence in
+                    NavigationLink(value: sequence) {
+                        SequenceRow(sequence: sequence)
+                    }
+                }
+                .onDelete(perform: deleteSequences)
+            }
+        }
+        .navigationSplitViewColumnWidth(min: 200, ideal: 250)
+        .toolbar {
+            ToolbarItem {
+                Button(action: createNewSequence) {
+                    Label("New Recording", systemImage: "plus")
+                }
+            }
+        }
     }
 
     private func createNewSequence() {
-        let sequence = ActionSequence(name: "New Recording")
+        let sequence = ActionSequence(name: "New Recording \(appState.sequences.count + 1)")
         appState.addSequence(sequence)
         appState.selectedSequence = sequence
     }
@@ -74,10 +91,43 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Sequence Row
+
+struct SequenceRow: View {
+    let sequence: ActionSequence
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(sequence.name)
+                .font(.headline)
+
+            HStack(spacing: 8) {
+                Label("\(sequence.actionCount)", systemImage: "hand.tap")
+                Label(formatDuration(sequence.totalDuration), systemImage: "clock")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func formatDuration(_ duration: TimeInterval) -> String {
+        let minutes = Int(duration) / 60
+        let seconds = Int(duration) % 60
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
 // MARK: - Detail View
 
 struct DetailView: View {
     @Environment(AppState.self) var appState
+    let recorder: ActionRecorder
+    let player: ActionPlayer
+    let ocrService: DeepSeekOCRService
+
+    @State private var isExporting = false
+    @State private var exportURL: URL?
 
     var body: some View {
         @Bindable var appState = appState
@@ -88,86 +138,259 @@ struct DetailView: View {
 
             if let sequence = appState.selectedSequence {
                 // Sequence info
-                VStack(spacing: 8) {
-                    Text(sequence.name)
-                        .font(.title)
-
-                    HStack(spacing: 20) {
-                        Label("\(sequence.actionCount) actions", systemImage: "hand.tap")
-                        Label(formatDuration(sequence.totalDuration), systemImage: "clock")
-                    }
-                    .foregroundStyle(.secondary)
-                }
+                SequenceInfoView(sequence: sequence)
 
                 Divider()
 
-                // Action buttons
-                HStack(spacing: 16) {
-                    Button {
-                        appState.startRecording()
-                    } label: {
-                        Label("Record", systemImage: "record.circle")
-                    }
-                    .disabled(appState.mode != .idle)
-
-                    Button {
-                        appState.startPlayback(sequence: sequence)
-                    } label: {
-                        Label("Play", systemImage: "play.circle")
-                    }
-                    .disabled(appState.mode != .idle || sequence.actions.isEmpty)
-
-                    if appState.mode == .recording {
-                        Button {
-                            appState.stopRecording()
-                        } label: {
-                            Label("Stop", systemImage: "stop.circle")
-                        }
-                        .tint(.red)
-                    }
-
-                    if appState.mode == .playing {
-                        Button {
-                            appState.stopPlayback()
-                        } label: {
-                            Label("Stop", systemImage: "stop.circle")
-                        }
-                        .tint(.red)
-                    }
-                }
-                .buttonStyle(.borderedProminent)
+                // Control buttons
+                ControlButtonsView(
+                    sequence: sequence,
+                    recorder: recorder,
+                    player: player,
+                    ocrService: ocrService,
+                    isExporting: $isExporting,
+                    exportURL: $exportURL
+                )
 
                 // Progress indicators
-                if appState.mode == .playing {
-                    ProgressView(value: appState.playbackProgress) {
-                        Text("Playing...")
-                    }
-                    .padding()
-                }
-
-                if appState.mode == .processing {
-                    ProgressView(value: appState.processingProgress) {
-                        Text("Processing with AI...")
-                    }
-                    .padding()
-                }
+                ProgressSection(player: player, ocrService: ocrService, recorder: recorder)
 
                 Spacer()
 
-                // Action list preview
+                // Action list
                 if !sequence.actions.isEmpty {
                     ActionListView(actions: sequence.actions)
+                }
+
+                // Export result
+                if let url = exportURL {
+                    ExportResultView(url: url)
                 }
             }
         }
         .padding()
-        .frame(minWidth: 400, minHeight: 300)
+        .frame(minWidth: 500, minHeight: 400)
+    }
+}
+
+// MARK: - Sequence Info View
+
+struct SequenceInfoView: View {
+    let sequence: ActionSequence
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Text(sequence.name)
+                .font(.title)
+
+            HStack(spacing: 20) {
+                Label("\(sequence.actionCount) actions", systemImage: "hand.tap")
+                Label(formatDuration(sequence.totalDuration), systemImage: "clock")
+            }
+            .foregroundStyle(.secondary)
+        }
     }
 
     private func formatDuration(_ duration: TimeInterval) -> String {
         let minutes = Int(duration) / 60
         let seconds = Int(duration) % 60
         return String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
+// MARK: - Control Buttons View
+
+struct ControlButtonsView: View {
+    @Environment(AppState.self) var appState
+    let sequence: ActionSequence
+    let recorder: ActionRecorder
+    let player: ActionPlayer
+    let ocrService: DeepSeekOCRService
+    @Binding var isExporting: Bool
+    @Binding var exportURL: URL?
+
+    var body: some View {
+        HStack(spacing: 16) {
+            // Record button
+            if appState.mode == .idle {
+                Button {
+                    startRecording()
+                } label: {
+                    Label("Record", systemImage: "record.circle")
+                }
+            }
+
+            // Stop recording button
+            if appState.mode == .recording {
+                Button {
+                    stopRecording()
+                } label: {
+                    Label("Stop", systemImage: "stop.circle")
+                }
+                .tint(.red)
+            }
+
+            // Play button
+            if appState.mode == .idle && !sequence.actions.isEmpty {
+                Button {
+                    startPlayback()
+                } label: {
+                    Label("Play & Capture", systemImage: "play.circle")
+                }
+            }
+
+            // Stop playback button
+            if appState.mode == .playing {
+                Button {
+                    stopPlayback()
+                } label: {
+                    Label("Stop", systemImage: "stop.circle")
+                }
+                .tint(.red)
+            }
+
+            // Generate docs button
+            if appState.mode == .idle && !player.captureResults.isEmpty {
+                Button {
+                    generateDocumentation()
+                } label: {
+                    Label("Generate Docs", systemImage: "doc.badge.gearshape")
+                }
+            }
+        }
+        .buttonStyle(.borderedProminent)
+    }
+
+    private func startRecording() {
+        appState.startRecording()
+        recorder.startRecording(name: sequence.name)
+    }
+
+    private func stopRecording() {
+        if let newSequence = recorder.stopRecording() {
+            appState.updateSequence(newSequence)
+            appState.selectedSequence = newSequence
+        }
+        appState.stopRecording()
+    }
+
+    private func startPlayback() {
+        appState.startPlayback(sequence: sequence)
+        player.play(sequence)
+
+        player.onPlaybackComplete = { captures in
+            Task { @MainActor in
+                appState.stopPlayback()
+                appState.currentSession?.captures = captures
+            }
+        }
+    }
+
+    private func stopPlayback() {
+        player.stop()
+        appState.stopPlayback()
+    }
+
+    private func generateDocumentation() {
+        guard !player.captureResults.isEmpty else { return }
+
+        isExporting = true
+        appState.startProcessing()
+
+        Task {
+            do {
+                // Analyze images with AI
+                var analyses: [String] = []
+                for (index, capture) in player.captureResults.enumerated() {
+                    appState.processingProgress = Double(index) / Double(player.captureResults.count)
+                    let analysis = try await ocrService.analyzeImage(capture.screenshot)
+                    analyses.append(analysis)
+                }
+
+                // Generate markdown
+                let generator = MarkdownGenerator()
+                let documentsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                let outputDir = documentsDir.appendingPathComponent("DuckDocs/\(sequence.name)", isDirectory: true)
+
+                let url = try generator.export(
+                    title: sequence.name,
+                    captures: player.captureResults,
+                    aiAnalysis: analyses,
+                    to: outputDir
+                )
+
+                exportURL = url
+                appState.stopProcessing()
+                isExporting = false
+            } catch {
+                appState.showError(message: error.localizedDescription)
+                appState.stopProcessing()
+                isExporting = false
+            }
+        }
+    }
+}
+
+// MARK: - Progress Section
+
+struct ProgressSection: View {
+    @Environment(AppState.self) var appState
+    let player: ActionPlayer
+    let ocrService: DeepSeekOCRService
+    let recorder: ActionRecorder
+
+    var body: some View {
+        VStack(spacing: 12) {
+            if appState.mode == .playing {
+                ProgressView(value: player.progress) {
+                    Text("Playing... (\(player.currentIndex + 1)/\(player.totalActions))")
+                }
+            }
+
+            if appState.mode == .processing {
+                ProgressView(value: appState.processingProgress) {
+                    Text("Processing with AI...")
+                }
+            }
+
+            if appState.mode == .recording {
+                HStack {
+                    Circle()
+                        .fill(.red)
+                        .frame(width: 8, height: 8)
+
+                    Text("Recording: \(recorder.actionCount) actions")
+                }
+                .padding(.vertical, 8)
+            }
+        }
+        .padding()
+    }
+}
+
+// MARK: - Export Result View
+
+struct ExportResultView: View {
+    let url: URL
+
+    var body: some View {
+        GroupBox("Export Complete") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(url.path)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Button("Open in Finder") {
+                        NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
+                    }
+
+                    Button("Open File") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+        }
     }
 }
 
