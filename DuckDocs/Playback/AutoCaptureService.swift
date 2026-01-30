@@ -92,20 +92,15 @@ final class AutoCaptureService {
         // Show app before processing
         showApp()
 
-        // Phase 3: AI Processing
-        var analyses: [String] = []
-        for (i, image) in capturedImages.enumerated() {
-            if Task.isCancelled { return }
+        // Phase 3: AI Processing (parallel)
+        state = .processing(current: 0, total: capturedImages.count)
 
-            state = .processing(current: i + 1, total: capturedImages.count)
-
-            do {
-                let analysis = try await ocrService.analyzeImage(image)
-                analyses.append(analysis)
-            } catch {
-                state = .error("AI processing failed: \(error.localizedDescription)")
-                return
-            }
+        let analyses: [String]
+        do {
+            analyses = try await processImagesInParallel(images: capturedImages, ocrService: ocrService)
+        } catch {
+            state = .error("AI processing failed: \(error.localizedDescription)")
+            return
         }
 
         if Task.isCancelled { return }
@@ -173,6 +168,32 @@ final class AutoCaptureService {
 
         case .none:
             break
+        }
+    }
+
+    private func processImagesInParallel(images: [NSImage], ocrService: DeepSeekOCRService) async throws -> [String] {
+        // Process all images concurrently and collect results with indices
+        try await withThrowingTaskGroup(of: (Int, String).self) { group in
+            for (index, image) in images.enumerated() {
+                group.addTask {
+                    let result = try await ocrService.analyzeImage(image)
+                    await MainActor.run {
+                        // Update progress
+                        self.state = .processing(current: index + 1, total: images.count)
+                    }
+                    return (index, result)
+                }
+            }
+
+            // Collect results
+            var results: [(Int, String)] = []
+            for try await result in group {
+                results.append(result)
+            }
+
+            // Sort by index to maintain original order
+            results.sort { $0.0 < $1.0 }
+            return results.map { $0.1 }
         }
     }
 
