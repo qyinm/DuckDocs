@@ -45,8 +45,14 @@ final class PermissionManager {
 
     /// Request accessibility permission (opens System Settings)
     func requestAccessibilityPermission() {
+        // Try to show system prompt
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        AXIsProcessTrustedWithOptions(options)
+        let trusted = AXIsProcessTrustedWithOptions(options)
+
+        // If not trusted, also open System Settings directly as fallback
+        if !trusted {
+            openAccessibilitySettings()
+        }
 
         // Start polling for permission change
         startAccessibilityPolling()
