@@ -1,103 +1,96 @@
 # DuckDocs - Context for AI Assistants
 
-**Project:** DuckDocs  
-**Type:** macOS Native App (Swift/SwiftUI)  
-**Domain:** Automation + AI Document Generation  
+**Project:** DuckDocs
+**Type:** macOS Native App (Swift/SwiftUI)
+**Domain:** Automation + AI Document Generation
 
 ---
 
 ## What This Project Does
 
-DuckDocs automates the creation of documentation from user interactions:
+DuckDocs automates the creation of documentation by capturing screens and converting them to markdown:
 
-1. **Record**: Captures mouse actions (clicks, drags, scrolls) via macOS Accessibility/CGEvent APIs
-2. **Playback**: Replays actions automatically while taking screenshots at each step
-3. **Generate**: Uses DeepSeek OCR 2 (MLX 4-bit) running locally on Apple Silicon to convert screenshots into structured markdown docs
+1. **Select**: Choose capture target (full screen, region, or specific window)
+2. **Configure**: Set "next" action (arrow key, space, etc.) and capture count
+3. **Auto-Capture**: Automatically performs action → captures screenshot → repeats
+4. **Generate**: Sends screenshots to OpenRouter API (Vision LLM) for markdown conversion
 
-**User Journey:** Record → Playback → AI Processing → Markdown Output
+**User Journey:** Configure → Start Capture → Auto Action/Capture Loop → AI Processing (parallel) → Markdown Output
 
 ---
 
 ## When Working on This Project
 
-### If Adding Recording Features
-- Look at: `Sources/Recording/` 
-- Key files: `ActionRecorder.swift`, `EventMonitor.swift`
-- Must handle: Accessibility permission states, coordinate spaces (screen vs window)
-
-### If Adding Playback Features
-- Look at: `Sources/Playback/`
-- Key files: `ActionPlayer.swift`, `ScreenCapture.swift`
-- Must handle: Timing control, screenshot coordination, SCStream configuration
+### If Adding Capture Features
+- Look at: `DuckDocs/Playback/`
+- Key files: `AutoCaptureService.swift`, `ScreenCapture.swift`
+- Must handle: Capture modes (fullScreen, region, window), SCStream configuration
 
 ### If Adding AI Features
-- Look at: `Sources/AI/`
-- Key files: `VisionService.swift`, `MarkdownGenerator.swift`
-- Must handle: Python environment, model loading, mlx-lm integration
+- Look at: `DuckDocs/AI/`
+- Key files: `DeepSeekOCRService.swift`
+- Must handle: OpenRouter API, image base64 encoding, parallel processing
 
 ### If Working on UI
-- Look at: `Sources/Views/`
-- Pattern: SwiftUI with MVVM, separate views for each mode
+- Look at: `DuckDocs/Views/`
+- Key files: `ContentView.swift`, `RegionSelectorWindow.swift`, `WindowPickerView.swift`
+- Pattern: SwiftUI with @Observable
+
+### If Adding Capture Selection
+- `RegionSelectorWindow.swift`: NSPanel overlay for drag-to-select region
+- `WindowPickerView.swift`: SwiftUI sheet for window selection
+- `CaptureSettings.swift`: CaptureMode enum (fullScreen, region, window)
 
 ---
 
 ## Critical Technical Details
-
-### CGEvent Monitoring
-```swift
-// Global event tap for mouse/keyboard
-CGEvent.tapCreate(
-    tap: .cgSessionEventTap,
-    place: .headInsertEventTap,
-    options: .defaultTap,
-    eventsOfInterest: eventMask,
-    callback: callback,
-    userInfo: userInfo
-)
-```
-- Requires **Accessibility permission** (users must grant in System Settings)
-- Event taps run on dedicated thread
-- Must handle multiple displays (screen coordinates, not window)
 
 ### ScreenCaptureKit
 ```swift
 // Modern screenshot API (macOS 12.3+)
 let content = try await SCShareableContent.current
 let filter = SCContentFilter(display: display, excludingWindows: [])
-let stream = SCStream(filter: filter, configuration: config, delegate: self)
+// Supports: captureScreen(), captureRegion(rect), captureWindowByID(id)
 ```
-- Replaces deprecated CGDisplay APIs
 - Supports window capture, display capture, or region capture
 - Must handle stream lifecycle (start/stop properly)
 
-### Vision Language Model Integration (mlx-swift-lm)
+### OpenRouter API Integration
 ```swift
-// Native Swift MLX inference
-import MLXLMCommon
-import MLXLLM
-
-func analyzeImage(_ image: NSImage) async throws -> String {
-    // 1. Load VLM model (auto-downloads on first use)
-    let context = try await MLXLMCommon.loadModel(id: modelId)
-
-    // 2. Create chat session with image processing
-    let session = ChatSession(context, generateParameters: params, processing: processing)
-
-    // 3. Save NSImage to temp file
-    // 4. Analyze with VLM
-    let result = try await session.respond(to: prompt, image: .url(tempURL))
-
-    // 5. Cleanup temp file
-}
+// Vision LLM API call
+let requestBody: [String: Any] = [
+    "model": "openai/gpt-4.1-nano",
+    "max_tokens": 4096,
+    "messages": [[
+        "role": "user",
+        "content": [
+            ["type": "text", "text": prompt],
+            ["type": "image_url", "image_url": ["url": "data:image/jpeg;base64,\(base64)"]]
+        ]
+    ]]
+]
 ```
 
-**Model Details:**
-- Model: `mlx-community/Qwen2.5-VL-3B-Instruct-4bit`
-- Size: ~3GB (4-bit quantized)
-- Requirements: Apple Silicon (M1/M2/M3/M4/M5), 8GB+ RAM
-- First run: Auto-download on initial load
-- Offline: 100% local, no internet required after download
-- No Python required: Pure Swift implementation via mlx-swift-lm
+**API Details:**
+- Provider: OpenRouter (https://openrouter.ai)
+- Model: `openai/gpt-4.1-nano` (configurable)
+- Requires: API key from user (stored in UserDefaults)
+- Images: Resized to max 2048px, JPEG 80% quality
+
+### Parallel Image Processing
+```swift
+// Process all images concurrently
+try await withThrowingTaskGroup(of: (Int, String).self) { group in
+    for (index, image) in images.enumerated() {
+        group.addTask {
+            let result = try await ocrService.analyzeImage(image)
+            return (index, result)
+        }
+    }
+    // Sort by index to maintain order
+    results.sort { $0.0 < $1.0 }
+}
+```
 
 ---
 
@@ -105,11 +98,11 @@ func analyzeImage(_ image: NSImage) async throws -> String {
 
 | Task | Entry Point | Notes |
 |------|-------------|-------|
-| Add new action type | `ActionSequence.swift` (enum) → `EventMonitor.swift` → `ActionPlayer.swift` | Update all three |
-| Change screenshot timing | `ScreenCapture.swift` | Modify capture trigger |
-| Modify AI processing | `DeepSeekOCRService.swift` | mlx-swift-lm, VLM config |
-| Modify output format | `MarkdownGenerator.swift` | Templates/prompts |
-| Add UI screen | `Views/*.swift` | Follow SwiftUI MVVM |
+| Change AI model | `DeepSeekOCRService.swift` | Update `modelId` |
+| Modify capture logic | `AutoCaptureService.swift` | `executeJob()` method |
+| Add capture mode | `CaptureSettings.swift` | Add to `CaptureMode` enum |
+| Change output format | `AutoCaptureService.swift` | `saveOutput()` method |
+| Add UI setting | `ContentView.swift` | `SettingsSection` view |
 | Handle permissions | `DuckDocsApp.swift` | Onboarding flow |
 
 ---
@@ -117,77 +110,80 @@ func analyzeImage(_ image: NSImage) async throws -> String {
 ## Data Flow
 
 ```
-User Actions
+User Configuration (CaptureJob)
     ↓
-CGEvent Monitor (CGEvent.tapCreate)
+Start Capture → App hides (3s delay)
     ↓
-ActionRecorder → [Action] array
+Auto-Capture Loop:
+    - Capture screenshot (ScreenCapture)
+    - Perform next action (CGEvent.post)
+    - Repeat n times
     ↓
-Save to JSON (Codable)
+App shows → Parallel AI Processing
     ↓
-Playback: ActionPlayer reads JSON
+OpenRouter API (gpt-4.1-nano)
     ↓
-For each action:
-    - Replay action (CGEvent.post)
-    - Capture screenshot (SCStream)
+Collect & sort results by index
     ↓
-DeepSeekOCRService (MLX local inference)
-    ↓
-MarkdownGenerator (structured output)
-    ↓
-output.md + /images folder
+Save: output.md + /images folder
 ```
+
+---
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `AutoCaptureService.swift` | Main capture workflow orchestrator |
+| `DeepSeekOCRService.swift` | OpenRouter API client for image analysis |
+| `ScreenCapture.swift` | ScreenCaptureKit wrapper |
+| `CaptureJob.swift` | Job configuration (mode, action, count) |
+| `CaptureSettings.swift` | CaptureMode enum |
+| `ContentView.swift` | Main UI with settings |
+| `RegionSelectorWindow.swift` | Drag-to-select region overlay |
+| `WindowPickerView.swift` | Window selection sheet |
 
 ---
 
 ## Important Considerations
 
 ### Security & Privacy
-- Never record keyboard input without explicit user consent
-- Filter out password fields (check for secure input context)
-- Store screenshots locally, not in cloud
-- Clear sensitive data from logs
+- API key stored locally in UserDefaults
+- Screenshots sent to external API (OpenRouter)
+- Images saved locally in ~/Documents/DuckDocs/
 
 ### Performance
-- First model load: ~10-30s (~3GB download if not cached)
-- Inference: ~1-3s per screenshot (Apple Silicon optimized via MLX)
-- Subsequent loads: Faster (model cached in memory)
-- Process screenshots in background queue
-- Consider batching multiple images if possible
-- M4/M5 chips benefit from Neural Accelerator optimizations
+- Parallel image processing for faster AI analysis
+- Images resized to max 2048px to reduce API payload
+- JPEG compression (80%) for smaller file size
 
 ### Error Scenarios to Handle
-- Accessibility permission denied → Show setup guide
+- API key missing → Show error message
+- API rate limit → Handle gracefully
 - ScreenCapture permission denied → Prompt user
-- Model download fails → Retry with progress indicator
-- Insufficient memory → Warn user (8GB+ recommended)
-- Multiple displays → Handle coordinate translation
-- App not found during playback → Show error
+- Network error → Retry or show error
+- Window not found → Fall back to full screen
 
 ---
 
 ## Testing Checklist
 
-- [ ] Test with single display
-- [ ] Test with multiple displays
-- [ ] Test with Accessibility permission denied
-- [ ] Test with ScreenCapture permission denied
-- [ ] Test model loading on first run
-- [ ] Test with insufficient RAM (4GB system)
-- [ ] Test with large action sequences (100+ actions)
-- [ ] Test playback speed variations
-- [ ] Test memory usage with many screenshots
+- [ ] Test full screen capture
+- [ ] Test region selection
+- [ ] Test window selection
+- [ ] Test with different "next" actions (arrows, space, etc.)
+- [ ] Test parallel processing with multiple images
+- [ ] Test API error handling
+- [ ] Test without API key
 
 ---
 
 ## Resources
 
 - [ScreenCaptureKit Documentation](https://developer.apple.com/documentation/screencapturekit)
+- [OpenRouter API](https://openrouter.ai/docs)
 - [CGEvent Reference](https://developer.apple.com/documentation/coregraphics/cgevent)
-- [Accessibility Programming Guide](https://developer.apple.com/library/archive/documentation/Accessibility/Conceptual/AccessibilityMacOSX/)
-- [OpenAI Vision API](https://platform.openai.com/docs/guides/vision)
-- [Claude Vision API](https://docs.anthropic.com/claude/docs/vision)
 
 ---
 
-*This file is optimized for AI assistants. For general project knowledge, see AGENTS.md*
+*This file is optimized for AI assistants.*
