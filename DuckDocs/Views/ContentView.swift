@@ -10,10 +10,15 @@ import SwiftUI
 struct ContentView: View {
     @Environment(AppState.self) var appState
     @State private var showOnboarding = false
-    @State private var captureService = AutoCaptureService()
-    @State private var job = CaptureJob()
+    @Binding var captureService: AutoCaptureService
+    @Binding var job: CaptureJob
     @State private var showWindowPicker = false
     private var aiService: AIService { AIService.shared }
+
+    init(captureService: Binding<AutoCaptureService>, job: Binding<CaptureJob>) {
+        self._captureService = captureService
+        self._job = job
+    }
 
     var body: some View {
         ScrollView {
@@ -489,6 +494,6 @@ struct ActionButton: View {
 // MARK: - Preview
 
 #Preview {
-    ContentView()
+    ContentView(captureService: .constant(AutoCaptureService()), job: .constant(CaptureJob()))
         .environment(AppState.shared)
 }
