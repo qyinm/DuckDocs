@@ -7,9 +7,11 @@
 
 import Foundation
 import AppKit
+import os.log
 
 /// AI provider for Ollama (local or cloud)
 final class OllamaProvider: AIProvider, Sendable {
+    private static let logger = Logger(subsystem: "com.duckdocs", category: "Ollama")
     let providerType: AIProviderType = .ollama
     let modelId: String
     private let baseURL: String
@@ -24,7 +26,7 @@ final class OllamaProvider: AIProvider, Sendable {
         self.modelId = config.modelId
         self.apiKey = config.apiKey
         // If API key is provided but using default local URL, switch to cloud URL
-        if !config.apiKey.isEmpty && config.effectiveBaseURL == "http://localhost:11434" {
+        if !config.apiKey.isEmpty && config.effectiveBaseURL == "http://127.0.0.1:11434" {
             self.baseURL = "https://ollama.com"
         } else {
             self.baseURL = config.effectiveBaseURL
@@ -44,7 +46,7 @@ final class OllamaProvider: AIProvider, Sendable {
         }
 
         let modeLabel = isCloudMode ? "Cloud" : "Local"
-        print("[Ollama \(modeLabel)] Sending request to \(modelId) at \(baseURL)...")
+        Self.logger.debug("\(modeLabel, privacy: .public) mode: Sending request to \(self.modelId, privacy: .public)")
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -91,7 +93,7 @@ final class OllamaProvider: AIProvider, Sendable {
 
         if httpResponse.statusCode != 200 {
             let responseString = String(data: data, encoding: .utf8) ?? "No response body"
-            print("[Ollama] Error response: \(responseString)")
+            Self.logger.error("Error response (status \(httpResponse.statusCode)): \(responseString, privacy: .public)")
 
             // Check if Ollama is not running (local mode)
             if !isCloudMode && (responseString.contains("connection refused") || responseString.isEmpty) {
@@ -131,7 +133,7 @@ final class OllamaProvider: AIProvider, Sendable {
             responseText = response
         }
 
-        print("[Ollama \(modeLabel)] Analysis complete: \(responseText.prefix(100))...")
+        Self.logger.info("\(modeLabel, privacy: .public) mode: Analysis complete: \(responseText.prefix(100), privacy: .public)...")
         return responseText
     }
 }
