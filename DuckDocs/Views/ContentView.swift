@@ -49,7 +49,9 @@ struct ContentView: View {
             .padding(32)
         }
         .frame(minWidth: 500, minHeight: 600)
-        .onAppear {
+        .task {
+            // Wait for permission check to complete before deciding onboarding
+            await appState.permissionManager.checkAllPermissions()
             if !appState.permissionManager.allPermissionsGranted {
                 showOnboarding = true
             }
