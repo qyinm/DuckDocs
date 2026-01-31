@@ -57,11 +57,20 @@ final class AutoCaptureService {
     private func executeJob(_ job: CaptureJob, aiService: AIService) async {
         capturedImages = []
 
-        // Phase 1: Prepare - hide app and wait
+        // Phase 1: Prepare - show preview window with countdown
         state = .preparing
-        NSApp.hide(nil)
 
-        try? await Task.sleep(nanoseconds: UInt64(startDelay * 1_000_000_000))
+        // Show preview window during countdown
+        let previewWindow = await showCapturePreview(mode: job.captureMode)
+
+        // Wait for countdown or cancellation
+        let shouldContinue = await waitForPreviewCountdown(previewWindow)
+        if !shouldContinue || Task.isCancelled {
+            return
+        }
+
+        // Now hide app and continue with capture
+        NSApp.hide(nil)
 
         if Task.isCancelled { return }
 
@@ -276,5 +285,49 @@ final class AutoCaptureService {
     private func showApp() {
         NSApp.unhide(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func showCapturePreview(mode: CaptureMode) async -> CapturePreviewWindow? {
+        // Take a quick preview screenshot
+        let previewImage: NSImage
+        do {
+            previewImage = try await capture(mode: mode)
+        } catch {
+            // If preview fails, continue without preview
+            return nil
+        }
+
+        let window = CapturePreviewWindow(previewImage: previewImage, captureMode: mode)
+        window.show()
+        return window
+    }
+
+    private func waitForPreviewCountdown(_ window: CapturePreviewWindow?) async -> Bool {
+        guard let window = window else {
+            // No preview, just wait the normal delay
+            try? await Task.sleep(nanoseconds: UInt64(startDelay * 1_000_000_000))
+            return true
+        }
+
+        return await withCheckedContinuation { continuation in
+            var completed = false
+
+            window.onCancel = {
+                if !completed {
+                    completed = true
+                    Task { @MainActor in
+                        self.cancel()
+                    }
+                    continuation.resume(returning: false)
+                }
+            }
+
+            window.startCountdown {
+                if !completed {
+                    completed = true
+                    continuation.resume(returning: true)
+                }
+            }
+        }
     }
 }
