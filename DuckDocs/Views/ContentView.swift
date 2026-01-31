@@ -16,35 +16,38 @@ struct ContentView: View {
     private var aiService: AIService { AIService.shared }
 
     var body: some View {
-        VStack(spacing: 24) {
-            // Header
-            Text("DuckDocs")
-                .font(.largeTitle)
-                .fontWeight(.bold)
+        ScrollView {
+            VStack(spacing: 24) {
+                // Header
+                Text("DuckDocs")
+                    .font(.largeTitle)
+                    .fontWeight(.bold)
 
-            Text("Auto-capture and generate documentation")
-                .foregroundStyle(.secondary)
+                Text("Auto-capture and generate documentation")
+                    .foregroundStyle(.secondary)
 
-            Divider()
+                Divider()
 
-            // Settings
-            SettingsSection(job: $job, showWindowPicker: $showWindowPicker, aiService: aiService)
+                // Settings
+                SettingsSection(job: $job, showWindowPicker: $showWindowPicker, aiService: aiService)
 
-            Divider()
+                Divider()
 
-            // Status & Progress
-            StatusSection(captureService: captureService)
+                // Status & Progress
+                StatusSection(captureService: captureService)
 
-            Spacer()
+                Spacer()
+                    .frame(minHeight: 20)
 
-            // Action Button
-            ActionButton(
-                captureService: captureService,
-                job: job,
-                aiService: aiService
-            )
+                // Action Button
+                ActionButton(
+                    captureService: captureService,
+                    job: job,
+                    aiService: aiService
+                )
+            }
+            .padding(32)
         }
-        .padding(32)
         .frame(minWidth: 500, minHeight: 600)
         .onAppear {
             if !appState.permissionManager.allPermissionsGranted {
