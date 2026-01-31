@@ -22,10 +22,12 @@ final class AutoCaptureService {
         case saving
         case completed(URL)
         case error(String)
+        case partiallyCompleted(successCount: Int, failedCount: Int)
     }
 
     private(set) var state: State = .idle
     private(set) var capturedImages: [NSImage] = []
+    private(set) var processingResults: [ImageProcessingResult] = []
 
     private let screenCapture = ScreenCapture()
     private var captureTask: Task<Void, Never>?
@@ -105,15 +107,25 @@ final class AutoCaptureService {
         // Phase 3: AI Processing (parallel)
         state = .processing(current: 0, total: capturedImages.count)
 
-        let analyses: [String]
-        do {
-            analyses = try await processImagesInParallel(images: capturedImages, aiService: aiService)
-        } catch {
-            state = .error("AI processing failed: \(error.localizedDescription)")
+        let results = await processImagesInParallel(images: capturedImages, aiService: aiService)
+
+        if Task.isCancelled { return }
+
+        let failedCount = results.filter { $0.status == .failed }.count
+        let successCount = results.filter { $0.status == .success }.count
+
+        if failedCount > 0 && successCount == 0 {
+            // All failed
+            state = .error("All images failed to process. Check your API key and try again.")
+            return
+        } else if failedCount > 0 {
+            // Partial failure - show partial completion state
+            state = .partiallyCompleted(successCount: successCount, failedCount: failedCount)
             return
         }
 
-        if Task.isCancelled { return }
+        // All succeeded - continue to save
+        let analyses = results.compactMap { $0.analysis }
 
         // Phase 4: Save
         state = .saving
@@ -181,57 +193,79 @@ final class AutoCaptureService {
         }
     }
 
-    private func processImagesInParallel(images: [NSImage], aiService: AIService) async throws -> [String] {
-        let completedCount = OSAllocatedUnfairLock(initialState: 0)
-        let maxConcurrent = 5
+    private func processImagesInParallel(images: [NSImage], aiService: AIService) async -> [ImageProcessingResult] {
+        // Initialize results
+        processingResults = images.enumerated().map { index, image in
+            ImageProcessingResult(id: index, image: image, status: .pending)
+        }
 
-        return try await withThrowingTaskGroup(of: (Int, String).self) { group in
+        let maxConcurrent = 5
+        let completedCount = OSAllocatedUnfairLock(initialState: 0)
+
+        await withTaskGroup(of: (Int, Result<String, Error>).self) { group in
             var index = 0
 
             // Start initial batch
             while index < min(maxConcurrent, images.count) {
                 let currentIndex = index
                 let image = images[currentIndex]
+
+                await MainActor.run {
+                    processingResults[currentIndex].status = .processing
+                }
+
                 group.addTask {
-                    let result = try await aiService.analyzeImage(image)
-                    let current = completedCount.withLock { count -> Int in
-                        count += 1
-                        return count
+                    do {
+                        let result = try await aiService.analyzeImage(image)
+                        return (currentIndex, .success(result))
+                    } catch {
+                        return (currentIndex, .failure(error))
                     }
-                    await MainActor.run {
-                        self.state = .processing(current: current, total: images.count)
-                    }
-                    return (currentIndex, result)
                 }
                 index += 1
             }
 
-            // Process remaining, starting new task as each completes
-            var results: [(Int, String)] = []
-            for try await result in group {
-                results.append(result)
+            // Process remaining
+            for await (idx, result) in group {
+                let current = completedCount.withLock { count -> Int in
+                    count += 1
+                    return count
+                }
+
+                await MainActor.run {
+                    switch result {
+                    case .success(let analysis):
+                        processingResults[idx].status = .success
+                        processingResults[idx].analysis = analysis
+                    case .failure(let error):
+                        processingResults[idx].status = .failed
+                        processingResults[idx].errorMessage = error.localizedDescription
+                    }
+                    self.state = .processing(current: current, total: images.count)
+                }
 
                 if index < images.count {
                     let currentIndex = index
                     let image = images[currentIndex]
+
+                    await MainActor.run {
+                        processingResults[currentIndex].status = .processing
+                    }
+
                     group.addTask {
-                        let result = try await aiService.analyzeImage(image)
-                        let current = completedCount.withLock { count -> Int in
-                            count += 1
-                            return count
+                        do {
+                            let result = try await aiService.analyzeImage(image)
+                            return (currentIndex, .success(result))
+                        } catch {
+                            return (currentIndex, .failure(error))
                         }
-                        await MainActor.run {
-                            self.state = .processing(current: current, total: images.count)
-                        }
-                        return (currentIndex, result)
                     }
                     index += 1
                 }
             }
-
-            results.sort { $0.0 < $1.0 }
-            return results.map { $0.1 }
         }
+
+        return processingResults
     }
 
     private func saveOutput(job: CaptureJob, analyses: [String]) async throws -> URL {
@@ -328,6 +362,77 @@ final class AutoCaptureService {
                     continuation.resume(returning: true)
                 }
             }
+        }
+    }
+
+    /// Retry failed images
+    func retryFailed(aiService: AIService) {
+        guard case .partiallyCompleted = state else { return }
+
+        captureTask = Task {
+            await retryFailedImages(aiService: aiService)
+        }
+    }
+
+    private func retryFailedImages(aiService: AIService) async {
+        let failedIndices = processingResults.enumerated()
+            .filter { $0.element.status == .failed }
+            .map { $0.offset }
+
+        guard !failedIndices.isEmpty else { return }
+
+        state = .processing(current: 0, total: failedIndices.count)
+
+        var retryCount = 0
+        for idx in failedIndices {
+            if Task.isCancelled { return }
+
+            processingResults[idx].status = .processing
+            processingResults[idx].errorMessage = nil
+
+            do {
+                let result = try await aiService.analyzeImage(processingResults[idx].image)
+                processingResults[idx].status = .success
+                processingResults[idx].analysis = result
+            } catch {
+                processingResults[idx].status = .failed
+                processingResults[idx].errorMessage = error.localizedDescription
+            }
+
+            retryCount += 1
+            state = .processing(current: retryCount, total: failedIndices.count)
+        }
+
+        let stillFailed = processingResults.filter { $0.status == .failed }.count
+        let successCount = processingResults.filter { $0.status == .success }.count
+
+        if stillFailed > 0 {
+            state = .partiallyCompleted(successCount: successCount, failedCount: stillFailed)
+        } else {
+            // All now succeeded - can proceed to save
+            state = .processing(current: processingResults.count, total: processingResults.count)
+        }
+    }
+
+    /// Save results (call after all retries done or user accepts partial)
+    func saveResults(job: CaptureJob) {
+        captureTask = Task {
+            await performSave(job: job)
+        }
+    }
+
+    private func performSave(job: CaptureJob) async {
+        state = .saving
+
+        let analyses = processingResults
+            .sorted { $0.id < $1.id }
+            .compactMap { $0.analysis }
+
+        do {
+            let url = try await saveOutput(job: job, analyses: analyses)
+            state = .completed(url)
+        } catch {
+            state = .error("Save failed: \(error.localizedDescription)")
         }
     }
 }

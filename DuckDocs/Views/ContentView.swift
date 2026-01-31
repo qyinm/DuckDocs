@@ -39,7 +39,7 @@ struct ContentView: View {
                 Divider()
 
                 // Status & Progress
-                StatusSection(captureService: captureService)
+                StatusSection(captureService: captureService, job: job)
 
                 Spacer()
                     .frame(minHeight: 20)
@@ -363,6 +363,7 @@ struct SettingsSection: View {
 
 struct StatusSection: View {
     let captureService: AutoCaptureService
+    let job: CaptureJob
 
     var body: some View {
         VStack(spacing: 12) {
@@ -426,22 +427,53 @@ struct StatusSection: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+            case .partiallyCompleted(let successCount, let failedCount):
+                VStack(spacing: 12) {
+                    Label("Partial Completion", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .font(.headline)
+
+                    Text("\(successCount) succeeded, \(failedCount) failed")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    HStack(spacing: 12) {
+                        Button("Retry Failed") {
+                            captureService.retryFailed(aiService: AIService.shared)
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Button("Save Anyway") {
+                            captureService.saveResults(job: job)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
             }
 
-            // Preview thumbnails
+            // Preview thumbnails with status
             if !captureService.capturedImages.isEmpty {
                 ScrollView(.horizontal) {
                     HStack(spacing: 8) {
                         ForEach(Array(captureService.capturedImages.enumerated()), id: \.offset) { index, image in
-                            Image(nsImage: image)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(height: 60)
-                                .cornerRadius(4)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 4)
-                                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                                )
+                            ZStack(alignment: .topTrailing) {
+                                Image(nsImage: image)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fit)
+                                    .frame(height: 60)
+                                    .cornerRadius(4)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 4)
+                                            .stroke(statusColor(for: index), lineWidth: 2)
+                                    )
+
+                                // Status indicator
+                                if let result = captureService.processingResults.first(where: { $0.id == index }) {
+                                    statusIcon(for: result.status)
+                                        .offset(x: 4, y: -4)
+                                }
+                            }
                         }
                     }
                     .padding(.horizontal)
@@ -453,6 +485,40 @@ struct StatusSection: View {
         .frame(maxWidth: .infinity)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.3))
         .cornerRadius(12)
+    }
+
+    private func statusColor(for index: Int) -> Color {
+        guard let result = captureService.processingResults.first(where: { $0.id == index }) else {
+            return Color.secondary.opacity(0.3)
+        }
+        switch result.status {
+        case .pending: return Color.secondary.opacity(0.3)
+        case .processing: return Color.blue
+        case .success: return Color.green
+        case .failed: return Color.red
+        }
+    }
+
+    @ViewBuilder
+    private func statusIcon(for status: ImageProcessingResult.Status) -> some View {
+        switch status {
+        case .pending:
+            EmptyView()
+        case .processing:
+            ProgressView()
+                .scaleEffect(0.5)
+                .frame(width: 16, height: 16)
+        case .success:
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .font(.caption)
+                .background(Circle().fill(.white).padding(2))
+        case .failed:
+            Image(systemName: "xmark.circle.fill")
+                .foregroundStyle(.red)
+                .font(.caption)
+                .background(Circle().fill(.white).padding(2))
+        }
     }
 }
 
@@ -475,6 +541,27 @@ struct ActionButton: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
+
+        case .partiallyCompleted:
+            HStack(spacing: 12) {
+                Button {
+                    captureService.retryFailed(aiService: aiService)
+                } label: {
+                    Label("Retry Failed", systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    captureService.saveResults(job: job)
+                } label: {
+                    Label("Save Partial", systemImage: "square.and.arrow.down")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                }
+                .buttonStyle(.bordered)
+            }
 
         case .preparing, .capturing, .processing, .saving:
             Button {
