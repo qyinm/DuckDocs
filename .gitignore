@@ -16,6 +16,7 @@ DerivedData/
 
 # Claude
 .claude/
+.omc/
 
 # Build products
 build/
