@@ -319,39 +319,6 @@ The markdown file contains:
 
 ---
 
-## Contributing
-
-We welcome contributions! DuckDocs is open-source, and we'd love your help.
-
-### Ways to Contribute
-- **Report Bugs**: Open an [issue](https://github.com/qyinm/DuckDocs/issues)
-- **Suggest Features**: Share your ideas in discussions
-- **Submit Pull Requests**: Improvements are always welcome
-- **Improve Documentation**: Help us document better
-- **Share Feedback**: Let us know what works and what doesn't
-
-### Development Setup
-```bash
-# Clone the repository
-git clone https://github.com/qyinm/DuckDocs.git
-cd DuckDocs
-
-# Open in Xcode
-open DuckDocs.xcodeproj
-
-# Build and run
-# Cmd+R in Xcode
-```
-
-### Code Guidelines
-- Follow Swift API Design Guidelines
-- Use descriptive variable names
-- Add comments for complex logic
-- Write concurrent-safe code
-- Test on both Apple Silicon and Intel
-
----
-
 ## License
 
 DuckDocs is released under the MIT License. See [LICENSE](LICENSE) file for details.
@@ -370,54 +337,7 @@ DuckDocs is built with modern Apple frameworks and community-driven AI providers
 
 ---
 
-## Roadmap
-
-### Current Status (Coming Soon)
-- Core capture and AI processing
-- Multi-provider support
-- Basic markdown export
-
-### Planned Features
-- [ ] Templates for different documentation types
-- [ ] Custom CSS styling for exports
-- [ ] Batch processing multiple jobs
-- [ ] Advanced image filtering and preprocessing
-- [ ] Integration with GitHub/GitLab for direct commits
-- [ ] Cloud sync for projects across devices
-- [ ] Mobile companion app for configuration
-- [ ] Video processing (convert to frame-by-frame documentation)
-
----
-
-## Getting Help
-
-### Documentation
-- Check the [GitHub Wiki](https://github.com/qyinm/DuckDocs/wiki) (coming soon)
-- Read through [open issues](https://github.com/qyinm/DuckDocs/issues) for solutions
-
-### Support
-- Open an [issue](https://github.com/qyinm/DuckDocs/issues) for bugs
-- Start a [discussion](https://github.com/qyinm/DuckDocs/discussions) for questions
-- Email: [feedback@duckdocs.dev](mailto:feedback@duckdocs.dev) (coming soon)
-
-### Community
-- Follow [@DuckDocsApp](https://twitter.com/DuckDocsApp) on Twitter (coming soon)
-- Join our Discord server (coming soon)
-
----
-
-## Star History
-
-If you find DuckDocs useful, please star the repository to show your support!
-
-[![Star History](https://api.star-history.com/svg?repos=qyinm/DuckDocs&type=Date)](https://star-history.com/#qyinm/DuckDocs&Date)
-
----
-
 <p align="center">
-  Made with care by the DuckDocs team
-  <br/>
   <a href="https://github.com/qyinm/DuckDocs">GitHub</a> •
-  <a href="https://github.com/qyinm/DuckDocs/issues">Issues</a> •
-  <a href="https://github.com/qyinm/DuckDocs/discussions">Discussions</a>
+  <a href="https://github.com/qyinm/DuckDocs/issues">Issues</a>
 </p>
