@@ -32,6 +32,9 @@ final class AIService {
     /// Custom prompt for analysis
     var customPrompt: String?
 
+    /// Selected prompt template
+    var selectedTemplate: PromptTemplate = .general
+
     /// Maximum tokens for generation
     var maxTokens: Int = 4096
 
@@ -41,6 +44,7 @@ final class AIService {
     // MARK: - UserDefaults Keys
 
     private let configKey = "ai_provider_config"
+    private let templateKey = "selected_prompt_template"
 
     // MARK: - Initialization
 
@@ -52,6 +56,12 @@ final class AIService {
         } else {
             // Default to OpenRouter
             self.config = AIProviderConfig.defaultConfig(for: .openRouter)
+        }
+
+        // Load saved template
+        if let data = UserDefaults.standard.data(forKey: templateKey),
+           let savedTemplate = try? JSONDecoder().decode(PromptTemplate.self, from: data) {
+            self.selectedTemplate = savedTemplate
         }
 
         // Try to load API key from environment if not set
@@ -78,6 +88,14 @@ final class AIService {
             saveConfig()
             // Save to Keychain
             try? KeychainService.save(apiKey: newValue, for: config.providerType)
+        }
+    }
+
+    /// Update the selected template
+    func setTemplate(_ template: PromptTemplate) {
+        selectedTemplate = template
+        if let data = try? JSONEncoder().encode(template) {
+            UserDefaults.standard.set(data, forKey: templateKey)
         }
     }
 
@@ -125,7 +143,7 @@ final class AIService {
         state = .processing
         progress = 0.0
 
-        let analysisPrompt = prompt ?? customPrompt ?? "Convert this image to markdown format. Extract all text and preserve the layout structure."
+        let analysisPrompt = prompt ?? customPrompt ?? selectedTemplate.prompt
 
         Self.logger.info("Using provider: \(self.config.providerType.rawValue, privacy: .public), model: \(self.config.modelId, privacy: .public)")
 

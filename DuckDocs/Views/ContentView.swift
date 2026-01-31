@@ -80,6 +80,7 @@ struct SettingsSection: View {
     @State private var apiKey: String = AIService.shared.apiKey
     @State private var useCustomModel: Bool = false
     @State private var baseURL: String = ""
+    @State private var selectedTemplate: PromptTemplate = AIService.shared.selectedTemplate
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -288,6 +289,23 @@ struct SettingsSection: View {
                 Text("\(job.delayBetweenCaptures, specifier: "%.1f")s")
                     .frame(width: 40)
             }
+
+            // Prompt Template
+            HStack {
+                Text("Prompt Template:")
+                    .frame(width: 120, alignment: .trailing)
+
+                Picker("", selection: $selectedTemplate) {
+                    ForEach(PromptTemplate.allCases) { template in
+                        Label(template.rawValue, systemImage: template.icon).tag(template)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity)
+                .onChange(of: selectedTemplate) { _, newValue in
+                    aiService.setTemplate(newValue)
+                }
+            }
         }
         .padding()
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
@@ -310,6 +328,7 @@ struct SettingsSection: View {
         selectedProvider = aiService.providerType
         apiKey = aiService.apiKey
         baseURL = aiService.config.baseURL ?? ""
+        selectedTemplate = aiService.selectedTemplate
 
         // Find current model in presets
         if let index = selectedProvider.presetModels.firstIndex(of: aiService.modelId) {
