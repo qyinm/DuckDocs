@@ -143,7 +143,7 @@ In the meantime:
 ### For Early Access
 
 If you're interested in early access, please:
-- Open an [issue](https://github.com/qyinm/DuckDocs/issues) requesting beta access
+- Open an [issue](https://github.com/qyinm/duckdocs/issues) requesting beta access
 - Star the repository to show your interest
 - Share feature requests and feedback
 
@@ -338,6 +338,6 @@ DuckDocs is built with modern Apple frameworks and community-driven AI providers
 ---
 
 <p align="center">
-  <a href="https://github.com/qyinm/DuckDocs">GitHub</a> •
-  <a href="https://github.com/qyinm/DuckDocs/issues">Issues</a>
+  <a href="https://github.com/qyinm/duckdocs">GitHub</a> •
+  <a href="https://github.com/qyinm/duckdocs/issues">Issues</a>
 </p>
