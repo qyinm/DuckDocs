@@ -1,0 +1,216 @@
+//
+//  AIService.swift
+//  DuckDocs
+//
+//  Created by DuckDocs on 2026-01-31.
+//
+
+import Foundation
+import AppKit
+
+/// Central service for AI-powered image analysis with multi-provider support
+@Observable
+@MainActor
+final class AIService {
+    enum State: Equatable {
+        case idle
+        case loading
+        case processing
+        case error(String)
+    }
+
+    private(set) var state: State = .idle
+    private(set) var progress: Double = 0.0
+    private(set) var isReady: Bool = true
+    private(set) var loadingProgress: Double = 1.0
+
+    /// Current provider configuration
+    private(set) var config: AIProviderConfig
+
+    /// Custom prompt for analysis
+    var customPrompt: String?
+
+    /// Maximum tokens for generation
+    var maxTokens: Int = 4096
+
+    /// Shared instance for app-wide use
+    static let shared = AIService()
+
+    // MARK: - UserDefaults Keys
+
+    private let configKey = "ai_provider_config"
+
+    // MARK: - Initialization
+
+    init() {
+        // Load saved configuration or use default
+        if let data = UserDefaults.standard.data(forKey: configKey),
+           let savedConfig = try? JSONDecoder().decode(AIProviderConfig.self, from: data) {
+            self.config = savedConfig
+        } else {
+            // Default to OpenRouter
+            self.config = AIProviderConfig.defaultConfig(for: .openRouter)
+        }
+
+        // Try to load API key from environment if not set
+        loadAPIKeyFromEnvironment()
+    }
+
+    // MARK: - Provider Management
+
+    /// Get the current provider type
+    var providerType: AIProviderType {
+        config.providerType
+    }
+
+    /// Get the current model ID
+    var modelId: String {
+        config.modelId
+    }
+
+    /// Get the current API key
+    var apiKey: String {
+        get { config.apiKey }
+        set {
+            config.apiKey = newValue
+            saveConfig()
+            // Also save to provider-specific UserDefaults for backwards compatibility
+            if !config.providerType.apiKeyDefaultsKey.isEmpty {
+                UserDefaults.standard.set(newValue, forKey: config.providerType.apiKeyDefaultsKey)
+            }
+        }
+    }
+
+    /// Switch to a different provider
+    func switchProvider(_ type: AIProviderType) {
+        // Save current API key to provider-specific storage
+        if !config.providerType.apiKeyDefaultsKey.isEmpty {
+            UserDefaults.standard.set(config.apiKey, forKey: config.providerType.apiKeyDefaultsKey)
+        }
+
+        // Load new provider config
+        config.providerType = type
+        config.modelId = type.defaultModel
+
+        // Try to load API key for the new provider
+        if let savedKey = UserDefaults.standard.string(forKey: type.apiKeyDefaultsKey), !savedKey.isEmpty {
+            config.apiKey = savedKey
+        } else if let envKey = ProcessInfo.processInfo.environment[type.envVariable], !envKey.isEmpty {
+            config.apiKey = envKey
+        } else {
+            config.apiKey = ""
+        }
+
+        saveConfig()
+    }
+
+    /// Update the model ID
+    func setModelId(_ modelId: String) {
+        config.modelId = modelId
+        saveConfig()
+    }
+
+    /// Update the base URL (for custom endpoints)
+    func setBaseURL(_ baseURL: String?) {
+        config.baseURL = baseURL
+        saveConfig()
+    }
+
+    // MARK: - Image Analysis
+
+    /// Analyze a single image and convert to markdown
+    func analyzeImage(_ image: NSImage, prompt: String? = nil) async throws -> String {
+        guard config.providerType.requiresAPIKey == false || !config.apiKey.isEmpty else {
+            throw AIProviderError.apiKeyMissing
+        }
+
+        state = .processing
+        progress = 0.0
+
+        let analysisPrompt = prompt ?? customPrompt ?? "Convert this image to markdown format. Extract all text and preserve the layout structure."
+
+        print("[AIService] Using provider: \(config.providerType.rawValue), model: \(config.modelId)")
+
+        let provider = createProvider()
+        let result = try await provider.analyzeImage(image, prompt: analysisPrompt)
+
+        state = .idle
+        progress = 1.0
+
+        return result
+    }
+
+    // MARK: - Private Methods
+
+    private func createProvider() -> AIProvider {
+        switch config.providerType {
+        case .openRouter:
+            return OpenRouterProvider(config: config, maxTokens: maxTokens)
+        case .openAI:
+            return OpenAIProvider(config: config, maxTokens: maxTokens)
+        case .anthropic:
+            return AnthropicProvider(config: config, maxTokens: maxTokens)
+        case .ollama:
+            return OllamaProvider(config: config)
+        }
+    }
+
+    private func saveConfig() {
+        if let data = try? JSONEncoder().encode(config) {
+            UserDefaults.standard.set(data, forKey: configKey)
+        }
+    }
+
+    private func loadAPIKeyFromEnvironment() {
+        // Try to load from environment variable
+        if let key = ProcessInfo.processInfo.environment[config.providerType.envVariable], !key.isEmpty {
+            config.apiKey = key
+            return
+        }
+
+        // Try to load from UserDefaults
+        if let key = UserDefaults.standard.string(forKey: config.providerType.apiKeyDefaultsKey), !key.isEmpty {
+            config.apiKey = key
+        }
+    }
+
+    // MARK: - Legacy Compatibility
+
+    /// For backwards compatibility with code expecting DeepSeekOCRService
+    func preloadModel() {
+        // No preloading needed for API-based providers
+    }
+
+    func loadModel() async throws {
+        // No loading needed for API-based providers
+    }
+
+    func unloadModel() {
+        // No unloading needed for API-based providers
+    }
+}
+
+// MARK: - Legacy VisionError (for backwards compatibility)
+
+enum VisionError: LocalizedError {
+    case modelLoadFailed(String)
+    case modelNotReady
+    case imageConversionFailed
+    case analysisFailed(String)
+    case apiKeyMissing
+
+    var errorDescription: String? {
+        switch self {
+        case .modelLoadFailed(let message):
+            return "Failed to load model: \(message)"
+        case .modelNotReady:
+            return "Model is not ready"
+        case .imageConversionFailed:
+            return "Failed to convert image"
+        case .analysisFailed(let message):
+            return "Image analysis failed: \(message)"
+        case .apiKeyMissing:
+            return "API key is missing. Please set it in Settings."
+        }
+    }
+}

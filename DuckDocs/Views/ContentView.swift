@@ -13,7 +13,7 @@ struct ContentView: View {
     @State private var captureService = AutoCaptureService()
     @State private var job = CaptureJob()
     @State private var showWindowPicker = false
-    private var ocrService: DeepSeekOCRService { DeepSeekOCRService.shared }
+    private var aiService: AIService { AIService.shared }
 
     var body: some View {
         VStack(spacing: 24) {
@@ -28,7 +28,7 @@ struct ContentView: View {
             Divider()
 
             // Settings
-            SettingsSection(job: $job, showWindowPicker: $showWindowPicker)
+            SettingsSection(job: $job, showWindowPicker: $showWindowPicker, aiService: aiService)
 
             Divider()
 
@@ -41,7 +41,7 @@ struct ContentView: View {
             ActionButton(
                 captureService: captureService,
                 job: job,
-                ocrService: ocrService
+                aiService: aiService
             )
         }
         .padding(32)
@@ -67,22 +67,126 @@ struct ContentView: View {
 struct SettingsSection: View {
     @Binding var job: CaptureJob
     @Binding var showWindowPicker: Bool
+    let aiService: AIService
     @State private var regionSelectorWindow: RegionSelectorWindow?
-    @State private var apiKey: String = DeepSeekOCRService.shared.apiKey
+    @State private var selectedProvider: AIProviderType = AIService.shared.providerType
+    @State private var selectedModelIndex: Int = 0
+    @State private var customModel: String = ""
+    @State private var apiKey: String = AIService.shared.apiKey
+    @State private var useCustomModel: Bool = false
+    @State private var baseURL: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            // API Key
+            // AI Provider
             HStack {
-                Text("OpenRouter API Key:")
+                Text("AI Provider:")
                     .frame(width: 120, alignment: .trailing)
-                SecureField("sk-or-...", text: $apiKey)
-                    .textFieldStyle(.roundedBorder)
-                    .onChange(of: apiKey) { _, newValue in
-                        DeepSeekOCRService.shared.apiKey = newValue
-                        UserDefaults.standard.set(newValue, forKey: "openrouter_api_key")
+
+                Picker("", selection: $selectedProvider) {
+                    ForEach(AIProviderType.allCases) { provider in
+                        Text(provider.rawValue).tag(provider)
                     }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity)
+                .onChange(of: selectedProvider) { _, newValue in
+                    aiService.switchProvider(newValue)
+                    apiKey = aiService.apiKey
+                    selectedModelIndex = 0
+                    customModel = ""
+                    useCustomModel = false
+                    baseURL = aiService.config.baseURL ?? ""
+                }
             }
+
+            // Model Selection
+            HStack {
+                Text("Model:")
+                    .frame(width: 120, alignment: .trailing)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    if useCustomModel {
+                        HStack {
+                            TextField("model-name", text: $customModel)
+                                .textFieldStyle(.roundedBorder)
+                                .onChange(of: customModel) { _, newValue in
+                                    if !newValue.isEmpty {
+                                        aiService.setModelId(newValue)
+                                    }
+                                }
+                            Button("Presets") {
+                                useCustomModel = false
+                                if let first = selectedProvider.presetModels.first {
+                                    aiService.setModelId(first)
+                                }
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    } else {
+                        HStack {
+                            Picker("", selection: $selectedModelIndex) {
+                                ForEach(Array(selectedProvider.presetModels.enumerated()), id: \.offset) { index, model in
+                                    Text(model).tag(index)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .frame(maxWidth: .infinity)
+                            .onChange(of: selectedModelIndex) { _, newValue in
+                                let models = selectedProvider.presetModels
+                                if newValue < models.count {
+                                    aiService.setModelId(models[newValue])
+                                }
+                            }
+                            Button("Custom") {
+                                useCustomModel = true
+                                customModel = aiService.modelId
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+            }
+
+            // API Key
+            if selectedProvider.requiresAPIKey || selectedProvider == .ollama {
+                HStack {
+                    Text("API Key:")
+                        .frame(width: 120, alignment: .trailing)
+                    VStack(alignment: .leading, spacing: 4) {
+                        SecureField(apiKeyPlaceholder, text: $apiKey)
+                            .textFieldStyle(.roundedBorder)
+                            .onChange(of: apiKey) { _, newValue in
+                                aiService.apiKey = newValue
+                            }
+                        if selectedProvider == .ollama {
+                            Text("Optional - for Ollama Cloud (ollama.com/settings/keys)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+
+            // Base URL (for Ollama local or custom endpoints)
+            if selectedProvider == .ollama {
+                HStack {
+                    Text("Server URL:")
+                        .frame(width: 120, alignment: .trailing)
+                    VStack(alignment: .leading, spacing: 4) {
+                        TextField("http://localhost:11434", text: $baseURL)
+                            .textFieldStyle(.roundedBorder)
+                            .onChange(of: baseURL) { _, newValue in
+                                aiService.setBaseURL(newValue.isEmpty ? nil : newValue)
+                            }
+                        Text("Leave empty for local, or use https://ollama.com for cloud")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Divider()
 
             // Output Name
             HStack {
@@ -183,6 +287,33 @@ struct SettingsSection: View {
         .padding()
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
         .cornerRadius(12)
+        .onAppear {
+            syncUIWithService()
+        }
+    }
+
+    private var apiKeyPlaceholder: String {
+        switch selectedProvider {
+        case .openRouter: return "sk-or-..."
+        case .openAI: return "sk-..."
+        case .anthropic: return "sk-ant-..."
+        case .ollama: return "ollama_... (optional for cloud)"
+        }
+    }
+
+    private func syncUIWithService() {
+        selectedProvider = aiService.providerType
+        apiKey = aiService.apiKey
+        baseURL = aiService.config.baseURL ?? ""
+
+        // Find current model in presets
+        if let index = selectedProvider.presetModels.firstIndex(of: aiService.modelId) {
+            selectedModelIndex = index
+            useCustomModel = false
+        } else {
+            customModel = aiService.modelId
+            useCustomModel = true
+        }
     }
 
     private func showRegionSelector() {
@@ -301,13 +432,13 @@ struct StatusSection: View {
 struct ActionButton: View {
     let captureService: AutoCaptureService
     let job: CaptureJob
-    let ocrService: DeepSeekOCRService
+    let aiService: AIService
 
     var body: some View {
         switch captureService.state {
         case .idle, .completed, .error:
             Button {
-                captureService.run(job: job, ocrService: ocrService)
+                captureService.run(job: job, aiService: aiService)
             } label: {
                 Label("Start Capture", systemImage: "play.fill")
                     .frame(maxWidth: .infinity)

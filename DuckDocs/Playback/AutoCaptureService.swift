@@ -35,11 +35,11 @@ final class AutoCaptureService {
     init() {}
 
     /// Run the full auto-capture workflow
-    func run(job: CaptureJob, ocrService: DeepSeekOCRService) {
+    func run(job: CaptureJob, aiService: AIService) {
         guard case .idle = state else { return }
 
         captureTask = Task {
-            await executeJob(job, ocrService: ocrService)
+            await executeJob(job, aiService: aiService)
         }
     }
 
@@ -53,7 +53,7 @@ final class AutoCaptureService {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    private func executeJob(_ job: CaptureJob, ocrService: DeepSeekOCRService) async {
+    private func executeJob(_ job: CaptureJob, aiService: AIService) async {
         capturedImages = []
 
         // Phase 1: Prepare - hide app and wait
@@ -97,7 +97,7 @@ final class AutoCaptureService {
 
         let analyses: [String]
         do {
-            analyses = try await processImagesInParallel(images: capturedImages, ocrService: ocrService)
+            analyses = try await processImagesInParallel(images: capturedImages, aiService: aiService)
         } catch {
             state = .error("AI processing failed: \(error.localizedDescription)")
             return
@@ -171,12 +171,12 @@ final class AutoCaptureService {
         }
     }
 
-    private func processImagesInParallel(images: [NSImage], ocrService: DeepSeekOCRService) async throws -> [String] {
+    private func processImagesInParallel(images: [NSImage], aiService: AIService) async throws -> [String] {
         // Process all images concurrently and collect results with indices
         try await withThrowingTaskGroup(of: (Int, String).self) { group in
             for (index, image) in images.enumerated() {
                 group.addTask {
-                    let result = try await ocrService.analyzeImage(image)
+                    let result = try await aiService.analyzeImage(image)
                     await MainActor.run {
                         // Update progress
                         self.state = .processing(current: index + 1, total: images.count)
