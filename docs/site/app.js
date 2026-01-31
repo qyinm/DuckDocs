@@ -8,7 +8,7 @@
 
     // Configuration
     const CONFIG = {
-        tagline: 'Auto-capture. AI-powered. Documentation done.',
+        tagline: 'Auto-capture.<br>AI-powered.<br>Documentation done.',
         typingSpeed: 60,
         typingStartDelay: 500,
         scrollThreshold: 0.15,
@@ -54,15 +54,23 @@
 
         const text = CONFIG.tagline;
         let index = 0;
+        let output = '';
 
         // Clear initial content
-        elements.typingText.textContent = '';
+        elements.typingText.innerHTML = '';
 
         // Start typing after delay
         setTimeout(function typeChar() {
             if (index < text.length) {
-                elements.typingText.textContent += text.charAt(index);
-                index++;
+                // Handle <br> tags as single unit
+                if (text.substring(index, index + 4) === '<br>') {
+                    output += '<br>';
+                    index += 4;
+                } else {
+                    output += text.charAt(index);
+                    index++;
+                }
+                elements.typingText.innerHTML = output;
                 setTimeout(typeChar, CONFIG.typingSpeed);
             } else {
                 // Hide cursor after typing completes (with delay)
