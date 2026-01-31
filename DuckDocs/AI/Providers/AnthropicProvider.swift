@@ -7,9 +7,13 @@
 
 import Foundation
 import AppKit
+import os.log
+
+private let anthropicAPIVersion = "2023-06-01"
 
 /// AI provider for Anthropic (Claude) API
 final class AnthropicProvider: AIProvider, Sendable {
+    private static let logger = Logger(subsystem: "com.duckdocs", category: "Anthropic")
     let providerType: AIProviderType = .anthropic
     let modelId: String
     private let apiKey: String
@@ -37,13 +41,14 @@ final class AnthropicProvider: AIProvider, Sendable {
             throw AIProviderError.invalidURL
         }
 
-        print("[Anthropic] Sending request to \(modelId)...")
+        Self.logger.debug("Sending request to \(self.modelId, privacy: .public)")
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = 120 // 2 minutes for vision APIs
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        request.setValue(anthropicAPIVersion, forHTTPHeaderField: "anthropic-version")
 
         // Anthropic uses a different format for images
         let requestBody: [String: Any] = [
@@ -72,7 +77,7 @@ final class AnthropicProvider: AIProvider, Sendable {
 
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await performRequestWithRetry(request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw AIProviderError.invalidResponse
@@ -80,7 +85,7 @@ final class AnthropicProvider: AIProvider, Sendable {
 
         if httpResponse.statusCode != 200 {
             let responseString = String(data: data, encoding: .utf8) ?? "No response body"
-            print("[Anthropic] Error response: \(responseString)")
+            Self.logger.error("Error response (status \(httpResponse.statusCode)): \(responseString, privacy: .public)")
 
             if let errorJson = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let error = errorJson["error"] as? [String: Any],
@@ -98,7 +103,25 @@ final class AnthropicProvider: AIProvider, Sendable {
             throw AIProviderError.invalidResponse
         }
 
-        print("[Anthropic] Analysis complete: \(text.prefix(100))...")
+        Self.logger.info("Analysis complete: \(text.prefix(100), privacy: .public)...")
         return text
+    }
+
+    private func performRequestWithRetry(_ request: URLRequest, maxRetries: Int = 3) async throws -> (Data, URLResponse) {
+        var lastError: Error?
+        for attempt in 0..<maxRetries {
+            do {
+                return try await URLSession.shared.data(for: request)
+            } catch {
+                lastError = error
+                // Don't retry on the last attempt
+                if attempt < maxRetries - 1 {
+                    // Exponential backoff: 1s, 2s, 4s
+                    let delay = UInt64(pow(2.0, Double(attempt))) * 1_000_000_000
+                    try await Task.sleep(nanoseconds: delay)
+                }
+            }
+        }
+        throw lastError ?? AIProviderError.networkError(NSError(domain: "DuckDocs", code: -1))
     }
 }
