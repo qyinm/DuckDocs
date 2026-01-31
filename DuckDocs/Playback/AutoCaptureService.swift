@@ -8,6 +8,7 @@
 import Foundation
 import AppKit
 import CoreGraphics
+import os
 
 /// Service for automatic capture workflow
 @Observable
@@ -172,26 +173,53 @@ final class AutoCaptureService {
     }
 
     private func processImagesInParallel(images: [NSImage], aiService: AIService) async throws -> [String] {
-        // Process all images concurrently and collect results with indices
-        try await withThrowingTaskGroup(of: (Int, String).self) { group in
-            for (index, image) in images.enumerated() {
+        let completedCount = OSAllocatedUnfairLock(initialState: 0)
+        let maxConcurrent = 5
+
+        return try await withThrowingTaskGroup(of: (Int, String).self) { group in
+            var index = 0
+
+            // Start initial batch
+            while index < min(maxConcurrent, images.count) {
+                let currentIndex = index
+                let image = images[currentIndex]
                 group.addTask {
                     let result = try await aiService.analyzeImage(image)
-                    await MainActor.run {
-                        // Update progress
-                        self.state = .processing(current: index + 1, total: images.count)
+                    let current = completedCount.withLock { count -> Int in
+                        count += 1
+                        return count
                     }
-                    return (index, result)
+                    await MainActor.run {
+                        self.state = .processing(current: current, total: images.count)
+                    }
+                    return (currentIndex, result)
                 }
+                index += 1
             }
 
-            // Collect results
+            // Process remaining, starting new task as each completes
             var results: [(Int, String)] = []
             for try await result in group {
                 results.append(result)
+
+                if index < images.count {
+                    let currentIndex = index
+                    let image = images[currentIndex]
+                    group.addTask {
+                        let result = try await aiService.analyzeImage(image)
+                        let current = completedCount.withLock { count -> Int in
+                            count += 1
+                            return count
+                        }
+                        await MainActor.run {
+                            self.state = .processing(current: current, total: images.count)
+                        }
+                        return (currentIndex, result)
+                    }
+                    index += 1
+                }
             }
 
-            // Sort by index to maintain original order
             results.sort { $0.0 < $1.0 }
             return results.map { $0.1 }
         }
@@ -200,7 +228,18 @@ final class AutoCaptureService {
     private func saveOutput(job: CaptureJob, analyses: [String]) async throws -> URL {
         let documentsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let outputDir = documentsDir.appendingPathComponent("DuckDocs/\(job.outputName)_\(timestamp)", isDirectory: true)
+
+        // Sanitize output name to prevent path traversal
+        let sanitizedName = job.outputName
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: "\\", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(of: "..", with: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .prefix(100)
+        let safeName = sanitizedName.isEmpty ? "output" : String(sanitizedName)
+
+        let outputDir = documentsDir.appendingPathComponent("DuckDocs/\(safeName)_\(timestamp)", isDirectory: true)
 
         // Create directories
         let imagesDir = outputDir.appendingPathComponent("images", isDirectory: true)
@@ -228,7 +267,7 @@ final class AutoCaptureService {
         }
 
         // Save markdown
-        let mdURL = outputDir.appendingPathComponent("\(job.outputName).md")
+        let mdURL = outputDir.appendingPathComponent("\(safeName).md")
         try markdown.write(to: mdURL, atomically: true, encoding: .utf8)
 
         return mdURL
