@@ -7,6 +7,7 @@
 
 import Foundation
 import AppKit
+import os.log
 
 // MARK: - Provider Types
 
@@ -26,16 +27,6 @@ enum AIProviderType: String, CaseIterable, Codable, Identifiable {
         case .openAI: return "OPENAI_API_KEY"
         case .anthropic: return "ANTHROPIC_API_KEY"
         case .ollama: return "OLLAMA_API_KEY"
-        }
-    }
-
-    /// UserDefaults key for storing API key
-    var apiKeyDefaultsKey: String {
-        switch self {
-        case .openRouter: return "openrouter_api_key"
-        case .openAI: return "openai_api_key"
-        case .anthropic: return "anthropic_api_key"
-        case .ollama: return "ollama_api_key"
         }
     }
 
@@ -163,6 +154,7 @@ enum AIProviderError: LocalizedError {
 
 /// Shared utilities for image processing
 enum ImageUtils {
+    private static let logger = Logger(subsystem: "com.duckdocs", category: "ImageUtils")
     /// Convert NSImage to base64 JPEG string
     /// - Parameters:
     ///   - image: The image to convert
@@ -192,7 +184,7 @@ enum ImageUtils {
             return nil
         }
 
-        print("[ImageUtils] Image size: \(Int(targetSize.width))x\(Int(targetSize.height)), data: \(jpegData.count / 1024)KB")
+        logger.debug("Image size: \(Int(targetSize.width), privacy: .public)x\(Int(targetSize.height), privacy: .public), data: \(jpegData.count / 1024, privacy: .public)KB")
         return jpegData.base64EncodedString()
     }
 }

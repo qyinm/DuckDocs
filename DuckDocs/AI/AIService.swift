@@ -7,11 +7,13 @@
 
 import Foundation
 import AppKit
+import os.log
 
 /// Central service for AI-powered image analysis with multi-provider support
 @Observable
 @MainActor
 final class AIService {
+    private static let logger = Logger(subsystem: "com.duckdocs", category: "AIService")
     enum State: Equatable {
         case idle
         case loading
@@ -74,26 +76,22 @@ final class AIService {
         set {
             config.apiKey = newValue
             saveConfig()
-            // Also save to provider-specific UserDefaults for backwards compatibility
-            if !config.providerType.apiKeyDefaultsKey.isEmpty {
-                UserDefaults.standard.set(newValue, forKey: config.providerType.apiKeyDefaultsKey)
-            }
+            // Save to Keychain
+            try? KeychainService.save(apiKey: newValue, for: config.providerType)
         }
     }
 
     /// Switch to a different provider
     func switchProvider(_ type: AIProviderType) {
-        // Save current API key to provider-specific storage
-        if !config.providerType.apiKeyDefaultsKey.isEmpty {
-            UserDefaults.standard.set(config.apiKey, forKey: config.providerType.apiKeyDefaultsKey)
-        }
+        // Save current API key to Keychain
+        try? KeychainService.save(apiKey: config.apiKey, for: config.providerType)
 
         // Load new provider config
         config.providerType = type
         config.modelId = type.defaultModel
 
         // Try to load API key for the new provider
-        if let savedKey = UserDefaults.standard.string(forKey: type.apiKeyDefaultsKey), !savedKey.isEmpty {
+        if let savedKey = KeychainService.load(for: type), !savedKey.isEmpty {
             config.apiKey = savedKey
         } else if let envKey = ProcessInfo.processInfo.environment[type.envVariable], !envKey.isEmpty {
             config.apiKey = envKey
@@ -129,7 +127,7 @@ final class AIService {
 
         let analysisPrompt = prompt ?? customPrompt ?? "Convert this image to markdown format. Extract all text and preserve the layout structure."
 
-        print("[AIService] Using provider: \(config.providerType.rawValue), model: \(config.modelId)")
+        Self.logger.info("Using provider: \(self.config.providerType.rawValue, privacy: .public), model: \(self.config.modelId, privacy: .public)")
 
         let provider = createProvider()
         let result = try await provider.analyzeImage(image, prompt: analysisPrompt)
@@ -168,8 +166,8 @@ final class AIService {
             return
         }
 
-        // Try to load from UserDefaults
-        if let key = UserDefaults.standard.string(forKey: config.providerType.apiKeyDefaultsKey), !key.isEmpty {
+        // Try to load from Keychain
+        if let key = KeychainService.load(for: config.providerType), !key.isEmpty {
             config.apiKey = key
         }
     }
@@ -187,30 +185,5 @@ final class AIService {
 
     func unloadModel() {
         // No unloading needed for API-based providers
-    }
-}
-
-// MARK: - Legacy VisionError (for backwards compatibility)
-
-enum VisionError: LocalizedError {
-    case modelLoadFailed(String)
-    case modelNotReady
-    case imageConversionFailed
-    case analysisFailed(String)
-    case apiKeyMissing
-
-    var errorDescription: String? {
-        switch self {
-        case .modelLoadFailed(let message):
-            return "Failed to load model: \(message)"
-        case .modelNotReady:
-            return "Model is not ready"
-        case .imageConversionFailed:
-            return "Failed to convert image"
-        case .analysisFailed(let message):
-            return "Image analysis failed: \(message)"
-        case .apiKeyMissing:
-            return "API key is missing. Please set it in Settings."
-        }
     }
 }
