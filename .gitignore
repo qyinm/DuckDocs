@@ -21,6 +21,8 @@ DerivedData/
 # Build products
 build/
 release/
+exports/
+!exports/.gitkeep
 *.app
 
 # Temporary files

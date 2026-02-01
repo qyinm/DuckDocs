@@ -10,7 +10,8 @@
 #
 # Prerequisites:
 #   1. gh CLI installed and authenticated: brew install gh && gh auth login
-#   2. Notarization credentials stored:
+#   2. Set APPLE_TEAM_ID environment variable: export APPLE_TEAM_ID="YOUR_TEAM_ID"
+#   3. Notarization credentials stored:
 #      xcrun notarytool store-credentials "notarytool-profile" \
 #          --apple-id "your@email.com" --team-id "YOUR_TEAM_ID"
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -28,7 +29,7 @@ BUILD_DIR="$PROJECT_ROOT/build"
 RELEASE_DIR="$PROJECT_ROOT/release"
 ARCHIVE_PATH="$BUILD_DIR/$PROJECT_NAME.xcarchive"
 EXPORT_PATH="$BUILD_DIR/export"
-TEAM_ID="MCP4D3M7XK"
+TEAM_ID="${APPLE_TEAM_ID:-}"
 ENTITLEMENTS_PATH="$PROJECT_ROOT/DuckDocs/DuckDocs.entitlements"
 
 # Parse arguments
@@ -109,6 +110,11 @@ preflight_checks() {
             log_error "GitHub CLI not authenticated. Run: gh auth login"
         fi
         log_success "GitHub CLI authenticated"
+    fi
+
+    # Check TEAM_ID (required for signing)
+    if [[ "$SKIP_SIGN" == false ]] && [[ -z "$TEAM_ID" ]]; then
+        log_error "APPLE_TEAM_ID environment variable is required. Set it with: export APPLE_TEAM_ID=YOUR_TEAM_ID"
     fi
 
     # Check for Developer ID certificate (skip if --skip-sign)
@@ -212,11 +218,15 @@ notarize_app() {
     # Submit for notarization
     echo -e "${YELLOW}Submitting to Apple...${NC}"
 
-    # Try keychain profile first, fall back to prompting
+    # Try keychain profiles (Xcode uses "AC_PASSWORD", we use "notarytool-profile")
     if xcrun notarytool submit "$NOTARIZE_ZIP" \
         --keychain-profile "notarytool-profile" \
         --wait 2>/dev/null; then
-        log_success "Notarization complete"
+        log_success "Notarization complete (notarytool-profile)"
+    elif xcrun notarytool submit "$NOTARIZE_ZIP" \
+        --keychain-profile "AC_PASSWORD" \
+        --wait 2>/dev/null; then
+        log_success "Notarization complete (AC_PASSWORD - Xcode profile)"
     else
         log_warning "Keychain profile not found. Using manual credentials..."
         echo "Enter Apple ID email:"
