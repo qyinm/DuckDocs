@@ -34,17 +34,20 @@ ENTITLEMENTS_PATH="$PROJECT_ROOT/DuckDocs/DuckDocs.entitlements"
 # Parse arguments
 DRAFT_FLAG=""
 SKIP_NOTARIZE=false
+SKIP_SIGN=false
 LOCAL_ONLY=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --draft) DRAFT_FLAG="--draft"; shift ;;
         --skip-notarize) SKIP_NOTARIZE=true; shift ;;
+        --skip-sign) SKIP_SIGN=true; SKIP_NOTARIZE=true; shift ;;
         --local) LOCAL_ONLY=true; shift ;;
         --help)
-            echo "Usage: $0 [--draft] [--skip-notarize] [--local]"
+            echo "Usage: $0 [--draft] [--skip-notarize] [--skip-sign] [--local]"
             echo "  --draft          Create draft GitHub release"
             echo "  --skip-notarize  Skip notarization step"
+            echo "  --skip-sign      Skip code signing (implies --skip-notarize)"
             echo "  --local          Build only, don't upload to GitHub"
             exit 0
             ;;
@@ -108,14 +111,19 @@ preflight_checks() {
         log_success "GitHub CLI authenticated"
     fi
 
-    # Check for Developer ID certificate
-    IDENTITY=$(security find-identity -p codesigning -v 2>/dev/null | \
-        awk -F'"' '/Developer ID Application/ {print $2; exit}')
+    # Check for Developer ID certificate (skip if --skip-sign)
+    if [[ "$SKIP_SIGN" == true ]]; then
+        log_warning "Skipping certificate check (--skip-sign)"
+        IDENTITY=""
+    else
+        IDENTITY=$(security find-identity -p codesigning -v 2>/dev/null | \
+            awk -F'"' '/Developer ID Application/ {print $2; exit}')
 
-    if [[ -z "$IDENTITY" ]]; then
-        log_error "Developer ID Application certificate not found in Keychain"
+        if [[ -z "$IDENTITY" ]]; then
+            log_error "Developer ID Application certificate not found in Keychain"
+        fi
+        log_success "Found signing identity: $IDENTITY"
     fi
-    log_success "Found signing identity: $IDENTITY"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -140,8 +148,14 @@ build_universal() {
         archive \
         | xcbeautify 2>/dev/null || cat
 
-    # Create export options plist
-    cat > "$BUILD_DIR/ExportOptions.plist" << EOF
+    if [[ "$SKIP_SIGN" == true ]]; then
+        # For unsigned builds, just copy from archive
+        echo -e "${YELLOW}Copying app (unsigned)...${NC}"
+        mkdir -p "$EXPORT_PATH"
+        cp -R "$ARCHIVE_PATH/Products/Applications/$PROJECT_NAME.app" "$EXPORT_PATH/"
+    else
+        # Create export options plist
+        cat > "$BUILD_DIR/ExportOptions.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -156,13 +170,14 @@ build_universal() {
 </plist>
 EOF
 
-    # Export
-    echo -e "${YELLOW}Exporting...${NC}"
-    xcodebuild -exportArchive \
-        -archivePath "$ARCHIVE_PATH" \
-        -exportPath "$EXPORT_PATH" \
-        -exportOptionsPlist "$BUILD_DIR/ExportOptions.plist" \
-        | xcbeautify 2>/dev/null || cat
+        # Export
+        echo -e "${YELLOW}Exporting...${NC}"
+        xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportPath "$EXPORT_PATH" \
+            -exportOptionsPlist "$BUILD_DIR/ExportOptions.plist" \
+            | xcbeautify 2>/dev/null || cat
+    fi
 
     APP_PATH="$EXPORT_PATH/$PROJECT_NAME.app"
     if [[ ! -d "$APP_PATH" ]]; then
